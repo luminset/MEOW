@@ -4,11 +4,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -68,7 +68,9 @@ type Config struct {
 
 	Core int
 
-	HttpErrorCode int
+	HttpErrorCode        int
+	DirectFallbackStatus map[int]bool
+	ParentFallbackStatus map[int]bool
 
 	dir        string // directory containing config file
 	DirectFile string // direct sites specified by user
@@ -110,6 +112,7 @@ func initConfig(rcFile string) {
 	config.ProxyMode = proxyModeDefault
 	config.ParentProbeURL = defaultParentProbeURL
 	config.ParentProbeInterval = defaultParentProbeInterval
+	config.ParentFallbackStatus = defaultParentFallbackStatus()
 
 	config.AuthTimeout = 2 * time.Hour
 }
@@ -180,7 +183,7 @@ func parseDuration(val, msg string) (d time.Duration) {
 
 func allowEmptyConfigValue(key string) bool {
 	switch key {
-	case "shadowMethod", "logFile", "parentProbeURL":
+	case "shadowMethod", "logFile", "parentProbeURL", "directFallbackStatus", "parentFallbackStatus":
 		return true
 	default:
 		return false
@@ -617,24 +620,89 @@ func (p configParser) ParseHttpErrorCode(val string) {
 	config.HttpErrorCode = parseInt(val, "httpErrorCode")
 }
 
-func (p configParser) ParseParentFailureFeedback(val string) {
-	config.ParentFailureFeedback = parseBool(val, "parentFailureFeedback")
-}
-
-func (p configParser) ParseParentProbeFailStatus(val string) {
+func parseStatusCodeSet(val, msg string) map[int]bool {
 	status := make(map[int]bool)
 	for _, s := range strings.Split(val, ",") {
 		s = strings.TrimSpace(s)
 		if s == "" {
 			continue
 		}
-		code := parseInt(s, "parentProbeFailStatus")
+		code := parseInt(s, msg)
 		if code < 100 || code > 999 {
-			Fatalf("parentProbeFailStatus invalid status code: %d\n", code)
+			Fatalf("%s invalid status code: %d\n", msg, code)
 		}
 		status[code] = true
 	}
-	config.ParentProbeFailStatus = status
+	return status
+}
+
+func defaultParentFallbackStatus() map[int]bool {
+	return map[int]bool{502: true, 503: true, 504: true}
+}
+
+func directFallbackStatusSet() map[int]bool {
+	status := make(map[int]bool)
+	for code := range config.DirectFallbackStatus {
+		status[code] = true
+	}
+	if config.HttpErrorCode > 0 {
+		status[config.HttpErrorCode] = true
+	}
+	return status
+}
+
+func sortedStatusCodes(status map[int]bool) []int {
+	var codes []int
+	for code := range status {
+		codes = append(codes, code)
+	}
+	sort.Ints(codes)
+	return codes
+}
+
+func statusCodesString(status map[int]bool) string {
+	codes := sortedStatusCodes(status)
+	parts := make([]string, 0, len(codes))
+	for _, code := range codes {
+		parts = append(parts, strconv.Itoa(code))
+	}
+	return strings.Join(parts, ",")
+}
+
+func intersectStatusCodes(a, b map[int]bool) map[int]bool {
+	conflict := make(map[int]bool)
+	for code := range a {
+		if b[code] {
+			conflict[code] = true
+		}
+	}
+	return conflict
+}
+
+func validateFallbackStatusConfig() {
+	directStatus := directFallbackStatusSet()
+	conflict := intersectStatusCodes(directStatus, config.ParentFallbackStatus)
+	if len(conflict) == 0 {
+		return
+	}
+	Fatalf("fallback status config conflict: status %s exists in both direct fallback (httpErrorCode/directFallbackStatus) and parentFallbackStatus. Remove it from one side, or set parentFallbackStatus = to disable KEEP status fallback.\n",
+		statusCodesString(conflict))
+}
+
+func (p configParser) ParseDirectFallbackStatus(val string) {
+	config.DirectFallbackStatus = parseStatusCodeSet(val, "directFallbackStatus")
+}
+
+func (p configParser) ParseParentFallbackStatus(val string) {
+	config.ParentFallbackStatus = parseStatusCodeSet(val, "parentFallbackStatus")
+}
+
+func (p configParser) ParseParentFailureFeedback(val string) {
+	config.ParentFailureFeedback = parseBool(val, "parentFailureFeedback")
+}
+
+func (p configParser) ParseParentProbeFailStatus(val string) {
+	config.ParentProbeFailStatus = parseStatusCodeSet(val, "parentProbeFailStatus")
 }
 
 func (p configParser) ParseParentProbeURL(val string) {
@@ -681,12 +749,24 @@ func (p configParser) ParseQQWryFile(val string) {
 	config.QQWryFile = expandConfigPath(val)
 }
 
+func (p configParser) ParseQqwryFile(val string) {
+	p.ParseQQWryFile(val)
+}
+
 func (p configParser) ParseQQWryUpdateURL(val string) {
 	config.QQWryUpdateURL = val
 }
 
+func (p configParser) ParseQqwryUpdateURL(val string) {
+	p.ParseQQWryUpdateURL(val)
+}
+
 func (p configParser) ParseQQWryUpdateInterval(val string) {
 	config.QQWryUpdateInterval = parseDuration(val, "qqwryUpdateInterval")
+}
+
+func (p configParser) ParseQqwryUpdateInterval(val string) {
+	p.ParseQQWryUpdateInterval(val)
 }
 
 func (p configParser) ParseCert(val string) {
@@ -709,7 +789,7 @@ func defaultConfigOptions() []configOptionTemplate {
 		{"qqwryFile", "#############################\n# QQWry.dat 本地 IP 库路径；相对路径按 rc 文件所在目录解析\n# 仅用于 IPv4，读取失败时自动回退到内置中国 IP 库\n#############################\n#qqwryFile = " + config.QQWryFile + "\n"},
 		{"qqwryUpdateURL", "#############################\n# QQWry.dat 在线更新地址；默认使用 FW27623/qqwry 的最新数据直链\n#############################\n#qqwryUpdateURL = " + config.QQWryUpdateURL + "\n"},
 		{"qqwryUpdateInterval", "#############################\n# QQWry.dat 自动更新频率；设置为 0s 可关闭定时更新\n# 示例：24h 表示每 24 小时检查并下载一次\n#############################\n#qqwryUpdateInterval = 24h\n"},
-		{"proxyMode", "#############################\n# 代理模式，可选 default、keep、cow\n# default：保持 MEOW 当前白名单模式不变\n# keep：在 default 基础上，上游代理全部失败时尝试直连兜底\n# cow：默认直连，直连失败时快速改用上游代理尝试连接\n#############################\n#proxyMode = default\n"},
+		{"proxyMode", "#############################\n# 代理模式，可选 default、keep、cow\n# default：保持 MEOW 当前白名单模式不变\n# keep：在 default 基础上，上游代理连接失败或返回 parentFallbackStatus 状态码时尝试直连兜底\n# cow：默认直连，直连失败时快速改用上游代理尝试连接\n#############################\n#proxyMode = default\n"},
 		{"logFile", "#############################\n# 日志文件路径，如不指定则输出到 stdout；相对路径按 rc 文件所在目录解析\n#############################\n#logFile = meow.log\n"},
 		{"loadBalance", "#############################\n# 多个二级代理时的负载均衡策略，可选 backup、hash、latency\n#############################\n#loadBalance = backup\n"},
 		{"proxy", "#############################\n# 指定二级代理，可重复配置\n# 示例：proxy = socks5://127.0.0.1:1080\n# 示例：proxy = http://user:password@127.0.0.1:8080\n# 示例：proxy = ss://aes-256-cfb:password@1.2.3.4:8388\n#############################\n#proxy = socks5://127.0.0.1:1080\n"},
@@ -718,7 +798,9 @@ func defaultConfigOptions() []configOptionTemplate {
 		{"userPasswd", "#############################\n# 要求客户端通过用户名密码认证\n#############################\n#userPasswd = username:password\n"},
 		{"userPasswdFile", "#############################\n# 从文件读取多个用户名密码，文件每行格式：username:password[:port]\n# 相对路径按 rc 文件所在目录解析\n#############################\n#userPasswdFile = user_passwd.txt\n"},
 		{"authTimeout", "#############################\n# 认证失效时间，语法示例：2h、30m、2h30m\n#############################\n#authTimeout = 2h\n"},
-		{"httpErrorCode", "#############################\n# 将指定 HTTP error code 认为是被干扰并使用二级代理重试\n#############################\n#httpErrorCode = 403\n"},
+		{"httpErrorCode", "#############################\n# 兼容旧配置，已不建议使用：直连收到该 HTTP 状态码时改用二级代理重试\n# 请优先使用 directFallbackStatus；不能与 parentFallbackStatus 包含相同状态码，否则程序会报错退出\n#############################\n#httpErrorCode = 403\n"},
+		{"directFallbackStatus", "#############################\n# 直连收到这些 HTTP 状态码时，改用二级代理重试；多个状态码用逗号分隔\n# 仅当前请求正在直连、响应尚未发送给客户端且存在二级代理时生效\n# 不能与 parentFallbackStatus 包含相同状态码；留空表示不启用该规则\n#############################\n#directFallbackStatus = 403\n"},
+		{"parentFallbackStatus", "#############################\n# KEEP 模式下，二级代理真实请求返回这些 HTTP 状态码时，尝试直连兜底；多个状态码用逗号分隔\n# 仅 proxyMode = keep 且当前请求正在使用二级代理时生效；留空可关闭该规则\n# 不能与 httpErrorCode/directFallbackStatus 包含相同状态码，否则程序会报错退出\n#############################\nparentFallbackStatus = 502,503,504\n"},
 		{"parentFailureFeedback", "#############################\n# 请求阶段发生读写、超时、连接重置等错误时，将当前二级代理标记为失败\n#############################\n#parentFailureFeedback = true\n"},
 		{"parentProbeFailStatus", "#############################\n# 二级代理 CONNECT 探测时，指定哪些响应码视为代理不可用，多个状态码用逗号分隔\n#############################\n#parentProbeFailStatus = 403,407,502,503,504\n"},
 		{"parentProbeURL", "#############################\n# 二级代理连通性/延迟探测地址，仅 loadBalance = latency 时使用\n# 格式必须为 host:port；为空时使用默认值 " + defaultParentProbeURL + "\n# 域名示例：www.google.com:443；IPv4 示例：1.1.1.1:443；IPv6 示例：[2001:4860:4860::8888]:443\n#############################\n#parentProbeURL = " + config.ParentProbeURL + "\n"},
@@ -726,9 +808,9 @@ func defaultConfigOptions() []configOptionTemplate {
 		{"core", "#############################\n# 最多允许使用多少个 CPU 核\n#############################\n#core = 2\n"},
 		{"readTimeout", "#############################\n# 读取超时时间\n#############################\n#readTimeout = 2m\n"},
 		{"dialTimeout", "#############################\n# 连接超时时间\n#############################\n#dialTimeout = 30s\n"},
-		{"directFile", "#############################\n# 自定义白名单文件路径；相对路径按 rc 文件所在目录解析\n#############################\n#directFile = " + config.DirectFile + "\n"},
-		{"proxyFile", "#############################\n# 自定义强制代理名单文件路径；相对路径按 rc 文件所在目录解析\n#############################\n#proxyFile = " + config.ProxyFile + "\n"},
-		{"rejectFile", "#############################\n# 自定义黑名单文件路径；相对路径按 rc 文件所在目录解析\n# 支持具体 IP、CIDR、IP 范围、具体域名、二级域名、通配符、URL path/query 片段\n#############################\n#rejectFile = " + config.RejectFile + "\n"},
+		{"directFile", "#############################\n# 自定义白名单文件路径；相对路径按 rc 文件所在目录解析\n#############################\n#directFile = direct.txt\n"},
+		{"proxyFile", "#############################\n# 自定义强制代理名单文件路径；相对路径按 rc 文件所在目录解析\n#############################\n#proxyFile = proxy.txt\n"},
+		{"rejectFile", "#############################\n# 自定义黑名单文件路径；相对路径按 rc 文件所在目录解析\n# 支持具体 IP、CIDR、IP 范围、具体域名、二级域名、通配符、URL path/query 片段\n#############################\n#rejectFile = reject.txt\n"},
 		{"cert", "#############################\n# HTTPS 本地代理证书路径，使用 https listen 时需要；相对路径按 rc 文件所在目录解析\n#############################\n#cert = cert.pem\n"},
 		{"key", "#############################\n# HTTPS 本地代理私钥路径，使用 https listen 时需要；相对路径按 rc 文件所在目录解析\n#############################\n#key = key.pem\n"},
 	}
@@ -760,21 +842,7 @@ func ensureConfigFiles(rc string) {
 }
 
 func writeDefaultConfig(rc string) error {
-	f, err := os.Create(rc)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = io.WriteString(f, "# MEOW 配置文件。程序自动生成，按需取消注释并修改配置项。"+newLine+newLine)
-	if err != nil {
-		return err
-	}
-	for _, opt := range defaultConfigOptions() {
-		if _, err = io.WriteString(f, strings.ReplaceAll(opt.Body, "\n", newLine)+newLine); err != nil {
-			return err
-		}
-	}
-	return nil
+	return os.WriteFile(rc, []byte(renderFullConfig(activeConfigLines{Known: make(map[string][]string)})), 0644)
 }
 
 func ensureDomainListFile(file, header string) {
@@ -793,37 +861,15 @@ func syncConfigOptions(rc string) {
 	if err != nil {
 		Fatal("Error opening config file:", err)
 	}
-	lines := splitConfigLines(string(data))
-	cleanLines, removedDuplicate := cleanupConfigOptionBlocks(lines)
-	exists := collectConfigOptionKeys(cleanLines)
-
-	var missing []configOptionTemplate
-	for _, opt := range defaultConfigOptions() {
-		if !exists[opt.Key] {
-			missing = append(missing, opt)
-		}
-	}
-	if len(missing) == 0 && !removedDuplicate {
+	existing := collectActiveConfigLines(splitConfigLines(string(data)))
+	out := renderFullConfig(existing)
+	if normalizeConfigText(string(data)) == normalizeConfigText(out) {
 		return
-	}
-
-	cleanLines = trimTrailingEmptyLines(cleanLines)
-	out := strings.Join(cleanLines, newLine)
-	if out != "" {
-		out += newLine
-	}
-	for _, opt := range missing {
-		out += strings.ReplaceAll(opt.Body, "\n", newLine) + newLine
 	}
 	if err := os.WriteFile(rc, []byte(out), 0644); err != nil {
 		Fatal("can't update config file:", err)
 	}
-	if len(missing) > 0 {
-		fmt.Printf("检测到配置文件缺少 %d 个配置分组，已自动补全说明: %s\n", len(missing), rc)
-	}
-	if removedDuplicate {
-		fmt.Printf("已清理配置文件中重复的自动补全配置分组: %s\n", rc)
-	}
+	fmt.Println("已根据当前版本模板重建配置文件，并回填原有已启用配置:", rc)
 }
 
 func splitConfigLines(data string) []string {
@@ -831,13 +877,6 @@ func splitConfigLines(data string) []string {
 	data = strings.ReplaceAll(data, "\r", "\n")
 	lines := strings.Split(data, "\n")
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	return lines
-}
-
-func trimTrailingEmptyLines(lines []string) []string {
-	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
 		lines = lines[:len(lines)-1]
 	}
 	return lines
@@ -869,76 +908,97 @@ func configOptionKeyFromLine(line string, keys map[string]bool) (key string, com
 	return key, commented, true
 }
 
-func collectConfigOptionKeys(lines []string) map[string]bool {
+type activeConfigLines struct {
+	Known   map[string][]string
+	Unknown []string
+}
+
+func collectActiveConfigLines(lines []string) activeConfigLines {
 	keys := configOptionKeySet()
-	exists := make(map[string]bool)
+	existing := activeConfigLines{Known: make(map[string][]string)}
 	for _, line := range lines {
-		if key, _, ok := configOptionKeyFromLine(line, keys); ok {
-			exists[key] = true
+		trimmed := strings.TrimSpace(strings.TrimRight(line, "\r"))
+		trimmed = strings.TrimPrefix(trimmed, "\ufeff")
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		v := strings.SplitN(trimmed, "=", 2)
+		if len(v) != 2 {
+			existing.Unknown = append(existing.Unknown, trimmed)
+			continue
+		}
+		key := strings.TrimSpace(v[0])
+		if keys[key] {
+			existing.Known[key] = append(existing.Known[key], trimmed)
+		} else {
+			existing.Unknown = append(existing.Unknown, trimmed)
 		}
 	}
-	return exists
+	return existing
 }
 
-func cleanupConfigOptionBlocks(lines []string) ([]string, bool) {
+func renderFullConfig(existing activeConfigLines) string {
 	keys := configOptionKeySet()
-	seen := make(map[string]bool)
-	cleaned := make([]string, 0, len(lines))
-	removed := false
-	for i := 0; i < len(lines); {
-		if isAutoConfigHeader(lines, i) {
-			i += 3
-			removed = true
-			continue
+	var out strings.Builder
+	out.WriteString("# MEOW 配置文件。程序会按当前版本模板重建本文件，并回填已启用配置项。")
+	out.WriteString(newLine)
+	out.WriteString("# 注释中的示例不会被视为启用配置；如需启用，请去掉行首 # 并修改取值。")
+	out.WriteString(newLine)
+	out.WriteString(newLine)
+	for _, opt := range defaultConfigOptions() {
+		out.WriteString(renderConfigOption(opt, existing.Known[opt.Key], keys))
+		out.WriteString(newLine)
+	}
+	if len(existing.Unknown) > 0 {
+		out.WriteString("#############################")
+		out.WriteString(newLine)
+		out.WriteString("# 以下配置项当前版本无法归类或语法异常，保留用于让解析阶段明确报错，请检查后删除或修正")
+		out.WriteString(newLine)
+		out.WriteString("#############################")
+		out.WriteString(newLine)
+		for _, line := range existing.Unknown {
+			out.WriteString(line)
+			out.WriteString(newLine)
 		}
-		if key, commented, end, ok := generatedConfigBlock(lines, i, keys); ok {
-			if seen[key] && commented {
-				i = end
-				removed = true
-				continue
+		out.WriteString(newLine)
+	}
+	return out.String()
+}
+
+func renderConfigOption(opt configOptionTemplate, values []string, keys map[string]bool) string {
+	bodyLines := splitConfigLines(opt.Body)
+	if len(values) == 0 {
+		return strings.ReplaceAll(opt.Body, "\n", newLine) + newLine
+	}
+	var out strings.Builder
+	inserted := false
+	for _, line := range bodyLines {
+		if key, _, ok := configOptionKeyFromLine(line, keys); ok && key == opt.Key {
+			if !inserted {
+				for _, value := range values {
+					out.WriteString(value)
+					out.WriteString(newLine)
+				}
+				inserted = true
 			}
-			seen[key] = true
-			cleaned = append(cleaned, lines[i:end]...)
-			i = end
 			continue
 		}
-		if key, _, ok := configOptionKeyFromLine(lines[i], keys); ok {
-			seen[key] = true
-		}
-		cleaned = append(cleaned, lines[i])
-		i++
+		out.WriteString(line)
+		out.WriteString(newLine)
 	}
-	return cleaned, removed
+	if !inserted {
+		for _, value := range values {
+			out.WriteString(value)
+			out.WriteString(newLine)
+		}
+	}
+	return out.String()
 }
 
-func isAutoConfigHeader(lines []string, i int) bool {
-	if i+2 >= len(lines) {
-		return false
-	}
-	return strings.TrimSpace(lines[i]) == "#############################" &&
-		strings.Contains(lines[i+1], "以下配置项由当前版本自动补全") &&
-		strings.TrimSpace(lines[i+2]) == "#############################"
-}
-
-func generatedConfigBlock(lines []string, start int, keys map[string]bool) (key string, commented bool, end int, ok bool) {
-	if strings.TrimSpace(lines[start]) != "#############################" {
-		return "", false, start, false
-	}
-	end = start + 1
-	for end < len(lines) && strings.TrimSpace(lines[end]) != "" {
-		if k, c, found := configOptionKeyFromLine(lines[end], keys); found && key == "" {
-			key = k
-			commented = c
-		}
-		end++
-	}
-	if end < len(lines) {
-		end++
-	}
-	if key == "" {
-		return "", false, start, false
-	}
-	return key, commented, end, true
+func normalizeConfigText(data string) string {
+	data = strings.ReplaceAll(data, "\r\n", "\n")
+	data = strings.ReplaceAll(data, "\r", "\n")
+	return strings.TrimRight(data, "\n")
 }
 
 // overrideConfig should contain options from command line to override options
@@ -1089,6 +1149,7 @@ func overrideConfig(oldconfig, override *Config) {
 // Must call checkConfig before using config.
 func checkConfig() {
 	checkShadowsocks()
+	validateFallbackStatusConfig()
 	// listenAddr must be handled first, as addrInPAC dependends on this.
 	if listenProxy == nil {
 		listenProxy = []Proxy{newHttpProxy(defaultListenAddr, "", "http")}

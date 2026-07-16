@@ -61,6 +61,7 @@ type Request struct {
 	Header
 	isConnect bool
 	partial   bool // whether contains only partial request data
+	fallback  bool // whether this request has switched between direct and parent once
 	state     rqState
 }
 
@@ -692,8 +693,7 @@ func parseResponse(sv *serverConn, r *Request, rp *Response) (err error) {
 		return err
 	}
 
-	//Check for http error code from config file
-	if config.HttpErrorCode > 0 && rp.Status == config.HttpErrorCode {
+	if shouldInterceptHTTPStatus(sv, rp.Status) {
 		errl.Println("Requested http code is raised")
 		return CustomHttpErr
 	}

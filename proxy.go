@@ -495,6 +495,13 @@ func (c *clientConn) serve() {
 		if err = sv.doRequest(c, &r, &rp); err != nil {
 			// For client I/O error, we can actually put server connection to
 			// pool. But let's make thing simple for now.
+			if retrySv, retryErr := c.tryHTTPStatusFallback(&r, sv, rp.Status, err); retryErr == nil {
+				sv = retrySv
+				rp.reset()
+				if err = sv.doRequest(c, &r, &rp); err == nil {
+					goto requestDone
+				}
+			}
 			sv.Close()
 			if err == errPageSent && (!r.hasBody() || r.hasSent()) {
 				// Can only continue if request has no body, or request body
@@ -503,6 +510,7 @@ func (c *clientConn) serve() {
 			}
 			return
 		}
+	requestDone:
 		// Put server connection to pool, so other clients can use it.
 		_, isMeowConn := sv.Conn.(meowConn)
 		if rp.ConnectionKeepAlive || isMeowConn {
@@ -711,13 +719,82 @@ func isErrTimeout(err error) bool {
 }
 
 func isHttpErrCode(err error) bool {
-	if config.HttpErrorCode <= 0 {
-		return false
-	}
 	if err == CustomHttpErr {
 		return true
 	}
 	return false
+}
+
+func shouldDirectFallbackStatus(status int) bool {
+	if status == 0 {
+		return false
+	}
+	return directFallbackStatusSet()[status]
+}
+
+func shouldParentFallbackStatus(status int) bool {
+	return status != 0 && config.ParentFallbackStatus != nil && config.ParentFallbackStatus[status]
+}
+
+func shouldInterceptHTTPStatus(sv *serverConn, status int) bool {
+	if sv == nil || status == 0 {
+		return false
+	}
+	if sv.isDirect() {
+		return shouldDirectFallbackStatus(status) && !parentProxy.empty()
+	}
+	return config.ProxyMode == proxyModeKeep && shouldParentFallbackStatus(status)
+}
+
+func canFallbackHTTPStatus(r *Request, fromDirect bool, status int, err error) bool {
+	if !isHttpErrCode(err) || r.fallback || r.partial || !r.responseNotSent() {
+		return false
+	}
+	if fromDirect {
+		return shouldDirectFallbackStatus(status) && !parentProxy.empty()
+	}
+	return config.ProxyMode == proxyModeKeep && shouldParentFallbackStatus(status)
+}
+
+func (c *clientConn) createForcedServerConn(r *Request, direct bool, reason string) (*serverConn, error) {
+	var (
+		conn net.Conn
+		err  error
+	)
+	if direct {
+		dbgPrintRq(c, r, true)
+		conn, err = connectDirect(r.URL)
+	} else {
+		if parentProxy.empty() {
+			err = errors.New("no parent proxy")
+		} else {
+			dbgPrintRq(c, r, false)
+			conn, err = parentProxy.connect(r.URL)
+		}
+	}
+	if err != nil {
+		sendErrorPage(c, "504 Connection failed", err.Error(), genErrMsg(r, nil, reason))
+		return nil, errPageSent
+	}
+	return newServerConn(conn, r.URL.HostPort, direct), nil
+}
+
+func (c *clientConn) tryHTTPStatusFallback(r *Request, sv *serverConn, status int, err error) (*serverConn, error) {
+	fromDirect := sv.isDirect()
+	if !canFallbackHTTPStatus(r, fromDirect, status, err) {
+		return nil, err
+	}
+	if !fromDirect {
+		reportParentFailure(sv.Conn, err)
+	}
+	sv.Close()
+	r.fallback = true
+	if fromDirect {
+		debug.Printf("direct response status %d matched fallback rule, try parent proxy", status)
+		return c.createForcedServerConn(r, false, "Direct response matched fallback status, and parent proxy fallback failed.")
+	}
+	debug.Printf("parent response status %d matched KEEP fallback rule, try direct", status)
+	return c.createForcedServerConn(r, true, "Parent proxy response matched fallback status, and direct fallback failed.")
 }
 
 func isErrTooManyOpenFd(err error) bool {
@@ -997,6 +1074,33 @@ func (sv *serverConn) doConnect(r *Request, c *clientConn) (err error) {
 			debug.Printf("cli(%s) error send CONNECT request to parent: %v\n",
 				c.RemoteAddr(), err)
 			return err
+		}
+		var rp Response
+		sv.initBuf()
+		if err = parseResponse(sv, r, &rp); err != nil {
+			status := rp.Status
+			rp.releaseBuf()
+			if retrySv, retryErr := c.tryHTTPStatusFallback(r, sv, status, err); retryErr == nil {
+				sv = retrySv
+				if _, err = c.Write(connEstablished); err != nil {
+					debug.Printf("cli(%s) error send 200 Connecion established: %v\n",
+						c.RemoteAddr(), err)
+					return err
+				}
+			} else {
+				return retryErr
+			}
+		} else {
+			if rp.Status != 200 {
+				_, err = c.Write(rp.rawResponse())
+				rp.releaseBuf()
+				return err
+			}
+			if _, err = c.Write(rp.rawResponse()); err != nil {
+				rp.releaseBuf()
+				return err
+			}
+			rp.releaseBuf()
 		}
 	} else {
 		// debug.Printf("send connection confirmation to %s->%s\n", c.RemoteAddr(), r.URL.HostPort)
