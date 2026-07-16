@@ -135,6 +135,15 @@ listen = http://127.0.0.1:4411
 # 将指定的 HTTP error code 认为是被干扰，使用二级代理重试，默认为空
 #httpErrorCode =
 
+# 请求阶段发生读写、超时、连接重置等错误时，将当前二级代理标记为失败
+# 默认关闭；打开后可更快排除“能连上但转发不稳定”的二级代理
+#parentFailureFeedback = true
+
+# HTTP/HTTPS/MEOW 二级代理探测时，指定哪些 CONNECT 响应码视为代理不可用
+# 默认不配置，即不按 CONNECT 响应码判定不可用；多个状态码用英文逗号分隔
+# 示例：认证失败、禁止连接、上游错误都视为不可用
+#parentProbeFailStatus = 403,407,502,503,504
+
 # 最多允许使用多少个 CPU 核
 #core = 2
 

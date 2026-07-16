@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"html"
 	"io"
 	"os"
 	"text/template"
@@ -89,4 +90,15 @@ func sendPageGeneric(w io.Writer, codeReason, h1, msg string) {
 
 func sendErrorPage(w io.Writer, codeReason, h1, msg string) {
 	sendPageGeneric(w, codeReason, "[Error] "+h1, msg)
+}
+
+func sendBlockedPage(w io.Writer, r *Request) {
+	target := ""
+	if r != nil && r.URL != nil {
+		target = r.URL.String()
+	}
+	msg := "<p>访问的指定地址已经被拦截。</p>" +
+		"<p>地址：<code>" + html.EscapeString(target) + "</code></p>" +
+		"<p>如果你认为这是误拦截，请检查 direct/proxy/reject 名单规则。</p>"
+	sendPageGeneric(w, statusForbidden, "[Blocked] 地址已被拦截", msg)
 }

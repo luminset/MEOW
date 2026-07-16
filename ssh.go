@@ -1,19 +1,29 @@
 package main
 
 import (
-	"net"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
 )
 
 func SshRunning(socksServer string) bool {
-	c, err := net.Dial("tcp", socksServer)
+	c, err := dialTCP(socksServer)
 	if err != nil {
 		return false
 	}
-	c.Close()
-	return true
+	defer c.Close()
+
+	c.SetDeadline(time.Now().Add(effectiveDialTimeout()))
+	defer c.SetDeadline(zeroTime)
+	if _, err = c.Write(socksMsgVerMethodSelection); err != nil {
+		return false
+	}
+	repBuf := make([]byte, 2)
+	if _, err = io.ReadFull(c, repBuf); err != nil {
+		return false
+	}
+	return repBuf[0] == 5 && repBuf[1] == 0
 }
 
 func runOneSSH(server string) {

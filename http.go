@@ -271,7 +271,7 @@ func ParseRequestURIBytes(rawurl []byte) (*URL, error) {
 	}
 
 	var hostport, host, port, path string
-	id = bytes.IndexByte(rest, '/')
+	id = bytes.IndexAny(rest, "/?")
 	if id == -1 {
 		hostport = string(rest)
 	} else {
@@ -294,9 +294,9 @@ func ParseRequestURIBytes(rawurl []byte) (*URL, error) {
 		}
 	}
 
-        // Fixed wechat image url bug, url like http://[::ffff:183.192.196.102]/mmsns/lVxxxxxx
-        host = strings.TrimSuffix(strings.TrimPrefix(host, "[::ffff:"), "]")
-        hostport = net.JoinHostPort(host, port)
+	// Fixed wechat image url bug, url like http://[::ffff:183.192.196.102]/mmsns/lVxxxxxx
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "[::ffff:"), "]")
+	hostport = net.JoinHostPort(host, port)
 	return &URL{hostport, host, port, host2Domain(host), path}, nil
 }
 

@@ -288,6 +288,13 @@ func TestHostIsIP(t *testing.T) {
 		{"foo.com", false, false},
 		{"www.foo.com", false, false},
 		{"www.bar.foo.com", false, false},
+		{"::1", true, true},
+		{"::", true, true},
+		{"fc00::1", true, true},
+		{"fd00::1", true, true},
+		{"fe80::1", true, true},
+		{"2001:4860:4860::8888", true, false},
+		{"2400:3200::1", true, false},
 	}
 
 	for _, td := range testData {

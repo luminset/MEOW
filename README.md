@@ -1,6 +1,6 @@
 # MEOW Proxy
 
-当前版本：1.5 [CHANGELOG](CHANGELOG.md)
+当前版本：1.5-nohafix 修改版（源版本 1.5） [CHANGELOG](CHANGELOG.md)
 [![Build Status](https://travis-ci.org/netheril96/MEOW.png?branch=master)](https://travis-ci.org/netheril96/MEOW)
 
 <pre>
@@ -10,10 +10,59 @@
    \(__)|      国内网站直接连接，其他的网站使用代理连接
 </pre>
 
-## 与原版MEOW的差别
 
-* 本代码仓库删除了编译好的二进制文件，大大减少了git clone时的传输大小
-* IPv6一律走直连（对于教育网用户很有用）
+## NOHAFIX 修改版说明
+
+本修改版保留源版本号 `1.5`，运行版本格式为 `1.5-nohafix[构建次数]`。使用 `script/build-nohafix.ps1` 构建时会自动递增 `build_count.txt`，并生成 Windows amd64、Linux ARMv7、Linux ARM64 三个目标产物。
+
+### 构建与兼容性
+
+- 增加 `go.mod` 与 `go.sum`，使旧 GOPATH 项目可在现代 Go 模块模式下构建。
+- 修复 `chinaip_gen.go` 文件头异常字符导致的编译失败。
+- 修复 `chinaip_init.go` 与 `chinaip_data.go` 中 IPv6 数据重复声明导致的编译失败。
+- 修复新版 Go 对测试函数命名的检查问题。
+- 当前项目可在 Windows 下本机构建，并可通过 Go 原生交叉编译输出 Linux ARMv7 与 Linux ARM64 程序。
+
+### 配置文件自愈
+
+- Windows 下首次运行如果缺少 `rc.txt`，程序会自动创建默认配置文件。
+- 程序会自动创建 `direct.txt`、`proxy.txt`、`reject.txt` 名单文件，并在控制台输出提示信息。
+- 如果已有旧版本配置文件，但缺少当前版本支持的配置项，程序会在文件末尾自动追加缺失配置项的注释说明与示例，不覆盖用户已有配置。
+- 如果配置中指定了自定义 `directFile`、`proxyFile`、`rejectFile`，但对应文件不存在，程序会自动创建。
+- 修复 Windows UTF-8 BOM 导致第一行配置项无法被识别的问题。
+
+### 黑白名单增强
+
+`direct.txt`、`proxy.txt`、`reject.txt` 均支持以下规则：
+
+- 具体 IP：`203.0.113.8`
+- CIDR IP 段：`198.51.100.0/24`
+- IP 范围：`192.0.2.10-192.0.2.20`
+- 具体域名：`www.example.com`
+- 二级域名：`example.com`
+- 域名通配符：`*.ads.example.net`
+- URL path 片段：`/ad/`
+- URL query 片段：`?ad.js`
+
+命中 `reject.txt` 时，程序会返回自带的 `403 Forbidden` 拦截页，提示访问的指定地址已经被拦截，并展示被拦截的目标地址。
+
+### 代理模式
+
+新增配置项 `proxyMode`，可写入 `rc.txt`：
+
+```ini
+# 代理模式，可选 default、keep、cow
+# default：保持 MEOW 当前白名单模式不变
+# keep：在 default 基础上，上游代理全部失败时尝试直连兜底
+# cow：默认直连，直连失败时快速改用上游代理尝试连接
+proxyMode = default
+```
+
+三种模式说明：
+
+- `default`：保持当前 MEOW 白名单模式不变。国内或白名单地址直连，其他地址走上游代理。
+- `keep`：保连接模式。默认判定逻辑不变；当请求需要走上游代理但所有上游代理连接失败时，程序会再尝试直接连接目标网站。
+- `cow`：COW 模式。未命中黑名单或显式代理规则时默认直连；如果直连失败且配置了上游代理，则快速切换为通过上游代理尝试连接。
 
 ## MEOW 可以用来
 - 作为全局 HTTP 代理（支持 PAC），可以智能分流（直连国内网站、使用代理连接其他网站）

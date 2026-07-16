@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path"
@@ -16,8 +17,13 @@ import (
 )
 
 const (
-	version           = "1.5"
+	sourceVersion     = "1.5"
 	defaultListenAddr = "127.0.0.1:4411"
+)
+
+var (
+	nohaFixBuild = "0"
+	version      = sourceVersion + "-nohafix" + nohaFixBuild
 )
 
 type LoadBalanceMode byte
@@ -28,11 +34,20 @@ const (
 	loadBalanceLatency
 )
 
+type ProxyMode byte
+
+const (
+	proxyModeDefault ProxyMode = iota
+	proxyModeKeep
+	proxyModeCow
+)
+
 type Config struct {
 	RcFile      string // config file
 	LogFile     string // path for log file
 	JudgeByIP   bool
 	LoadBalance LoadBalanceMode // select load balance mode
+	ProxyMode   ProxyMode       // select proxy decision/fallback mode
 
 	SshServer []string
 
@@ -45,6 +60,9 @@ type Config struct {
 	// advanced options
 	DialTimeout time.Duration
 	ReadTimeout time.Duration
+
+	ParentFailureFeedback bool
+	ParentProbeFailStatus map[int]bool
 
 	Core int
 
@@ -80,6 +98,7 @@ func initConfig(rcFile string) {
 	config.CNIPFile = path.Join(config.dir, CNIPFname)
 
 	config.JudgeByIP = true
+	config.ProxyMode = proxyModeDefault
 
 	config.AuthTimeout = 2 * time.Hour
 }
@@ -107,10 +126,8 @@ func parseCmdLineConfig() *Config {
 	} else {
 		c.RcFile = expandTilde(c.RcFile)
 	}
-	if err := isFileExists(c.RcFile); err != nil {
-		Fatal("fail to get config file:", err)
-	}
 	initConfig(c.RcFile)
+	ensureConfigFiles(c.RcFile)
 	initDomainList(config.DirectFile, domainTypeDirect)
 	initDomainList(config.ProxyFile, domainTypeProxy)
 	initDomainList(config.RejectFile, domainTypeReject)
@@ -451,18 +468,32 @@ func (p configParser) ParseLoadBalance(val string) {
 	}
 }
 
+func (p configParser) ParseProxyMode(val string) {
+	switch strings.ToLower(val) {
+	case "default", "":
+		config.ProxyMode = proxyModeDefault
+	case "keep":
+		config.ProxyMode = proxyModeKeep
+	case "cow":
+		config.ProxyMode = proxyModeCow
+	default:
+		Fatalf("invalid proxyMode: %s, should be default, keep or cow\n", val)
+	}
+}
+
 func (p configParser) ParseDirectFile(val string) {
 	config.DirectFile = expandTilde(val)
-	if err := isFileExists(config.DirectFile); err != nil {
-		Fatal("direct file:", err)
-	}
+	ensureDomainListFile(config.DirectFile, "# 白名单：命中后直连。支持 IP、CIDR、IP 范围、域名、通配符、URL path/query 片段。"+newLine)
 }
 
 func (p configParser) ParseProxyFile(val string) {
 	config.ProxyFile = expandTilde(val)
-	if err := isFileExists(config.ProxyFile); err != nil {
-		Fatal("proxy file:", err)
-	}
+	ensureDomainListFile(config.ProxyFile, "# 强制代理名单：命中后使用二级代理。支持 IP、CIDR、IP 范围、域名、通配符、URL path/query 片段。"+newLine)
+}
+
+func (p configParser) ParseRejectFile(val string) {
+	config.RejectFile = expandTilde(val)
+	ensureDomainListFile(config.RejectFile, "# 黑名单：命中后返回 MEOW 自带拦截页。支持 IP、CIDR、IP 范围、域名、通配符、URL path/query 片段。"+newLine)
 }
 
 var shadow struct {
@@ -565,6 +596,26 @@ func (p configParser) ParseHttpErrorCode(val string) {
 	config.HttpErrorCode = parseInt(val, "httpErrorCode")
 }
 
+func (p configParser) ParseParentFailureFeedback(val string) {
+	config.ParentFailureFeedback = parseBool(val, "parentFailureFeedback")
+}
+
+func (p configParser) ParseParentProbeFailStatus(val string) {
+	status := make(map[int]bool)
+	for _, s := range strings.Split(val, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		code := parseInt(s, "parentProbeFailStatus")
+		if code < 100 || code > 999 {
+			Fatalf("parentProbeFailStatus invalid status code: %d\n", code)
+		}
+		status[code] = true
+	}
+	config.ParentProbeFailStatus = status
+}
+
 func (p configParser) ParseReadTimeout(val string) {
 	config.ReadTimeout = parseDuration(val, "readTimeout")
 }
@@ -583,6 +634,138 @@ func (p configParser) ParseCert(val string) {
 
 func (p configParser) ParseKey(val string) {
 	config.Key = val
+}
+
+type configOptionTemplate struct {
+	Key  string
+	Body string
+}
+
+func defaultConfigOptions() []configOptionTemplate {
+	return []configOptionTemplate{
+		{"listen", "#############################\n# 监听地址，设为 0.0.0.0 可以监听所有网卡并共享给局域网使用\n#############################\nlisten = http://" + defaultListenAddr + "\n"},
+		{"judgeByIP", "#############################\n# 通过 IP 判断是否直连，默认开启\n#############################\n#judgeByIP = true\n"},
+		{"proxyMode", "#############################\n# 代理模式，可选 default、keep、cow\n# default：保持 MEOW 当前白名单模式不变\n# keep：在 default 基础上，上游代理全部失败时尝试直连兜底\n# cow：默认直连，直连失败时快速改用上游代理尝试连接\n#############################\n#proxyMode = default\n"},
+		{"logFile", "#############################\n# 日志文件路径，如不指定则输出到 stdout\n#############################\n#logFile = meow.log\n"},
+		{"loadBalance", "#############################\n# 多个二级代理时的负载均衡策略，可选 backup、hash、latency\n#############################\n#loadBalance = backup\n"},
+		{"proxy", "#############################\n# 指定二级代理，可重复配置\n# 示例：proxy = socks5://127.0.0.1:1080\n# 示例：proxy = http://user:password@127.0.0.1:8080\n# 示例：proxy = ss://aes-256-cfb:password@1.2.3.4:8388\n#############################\n#proxy = socks5://127.0.0.1:1080\n"},
+		{"sshServer", "#############################\n# 执行 ssh 命令创建 SOCKS5 代理，需要系统已有 ssh 命令和公钥认证\n#############################\n#sshServer = user@server:local_socks_port[:server_ssh_port]\n"},
+		{"allowedClient", "#############################\n# 允许免认证访问的客户端 IP 或网段，多个项用逗号分隔\n#############################\n#allowedClient = 127.0.0.1, 192.168.1.0/24\n"},
+		{"userPasswd", "#############################\n# 要求客户端通过用户名密码认证\n#############################\n#userPasswd = username:password\n"},
+		{"userPasswdFile", "#############################\n# 从文件读取多个用户名密码，文件每行格式：username:password[:port]\n#############################\n#userPasswdFile = user_passwd.txt\n"},
+		{"authTimeout", "#############################\n# 认证失效时间，语法示例：2h、30m、2h30m\n#############################\n#authTimeout = 2h\n"},
+		{"httpErrorCode", "#############################\n# 将指定 HTTP error code 认为是被干扰并使用二级代理重试\n#############################\n#httpErrorCode = 403\n"},
+		{"parentFailureFeedback", "#############################\n# 请求阶段发生读写、超时、连接重置等错误时，将当前二级代理标记为失败\n#############################\n#parentFailureFeedback = true\n"},
+		{"parentProbeFailStatus", "#############################\n# 二级代理 CONNECT 探测时，指定哪些响应码视为代理不可用，多个状态码用逗号分隔\n#############################\n#parentProbeFailStatus = 403,407,502,503,504\n"},
+		{"core", "#############################\n# 最多允许使用多少个 CPU 核\n#############################\n#core = 2\n"},
+		{"readTimeout", "#############################\n# 读取超时时间\n#############################\n#readTimeout = 2m\n"},
+		{"dialTimeout", "#############################\n# 连接超时时间\n#############################\n#dialTimeout = 30s\n"},
+		{"directFile", "#############################\n# 自定义白名单文件路径；默认与 rc 文件在同一目录\n#############################\n#directFile = " + config.DirectFile + "\n"},
+		{"proxyFile", "#############################\n# 自定义强制代理名单文件路径；默认与 rc 文件在同一目录\n#############################\n#proxyFile = " + config.ProxyFile + "\n"},
+		{"rejectFile", "#############################\n# 自定义黑名单文件路径；默认与 rc 文件在同一目录\n# 支持具体 IP、CIDR、IP 范围、具体域名、二级域名、通配符、URL path/query 片段\n#############################\n#rejectFile = " + config.RejectFile + "\n"},
+		{"cert", "#############################\n# HTTPS 本地代理证书路径，使用 https listen 时需要\n#############################\n#cert = cert.pem\n"},
+		{"key", "#############################\n# HTTPS 本地代理私钥路径，使用 https listen 时需要\n#############################\n#key = key.pem\n"},
+	}
+}
+
+func ensureConfigFiles(rc string) {
+	if err := os.MkdirAll(path.Dir(rc), 0755); err != nil {
+		Fatal("can't create config directory:", err)
+	}
+
+	created := false
+	if _, err := os.Stat(rc); os.IsNotExist(err) {
+		if err := writeDefaultConfig(rc); err != nil {
+			Fatal("can't create default config file:", err)
+		}
+		fmt.Println("未找到配置文件，已自动创建默认配置:", rc)
+		created = true
+	} else if err != nil {
+		Fatal("fail to get config file:", err)
+	}
+
+	ensureDomainListFile(config.DirectFile, "# 白名单：命中后直连。支持 IP、CIDR、IP 范围、域名、通配符、URL path/query 片段。"+newLine)
+	ensureDomainListFile(config.ProxyFile, "# 强制代理名单：命中后使用二级代理。支持 IP、CIDR、IP 范围、域名、通配符、URL path/query 片段。"+newLine)
+	ensureDomainListFile(config.RejectFile, "# 黑名单：命中后返回 MEOW 自带拦截页。支持 IP、CIDR、IP 范围、域名、通配符、URL path/query 片段。"+newLine+"# 示例：*.ads.example.com"+newLine+"# 示例：/ad/"+newLine+"# 示例：?ad.js"+newLine)
+
+	if !created {
+		appendMissingConfigOptions(rc)
+	}
+}
+
+func writeDefaultConfig(rc string) error {
+	f, err := os.Create(rc)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.WriteString(f, "# MEOW 配置文件。程序自动生成，按需取消注释并修改配置项。"+newLine+newLine)
+	if err != nil {
+		return err
+	}
+	for _, opt := range defaultConfigOptions() {
+		if _, err = io.WriteString(f, strings.ReplaceAll(opt.Body, "\n", newLine)+newLine); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureDomainListFile(file, header string) {
+	if _, err := os.Stat(file); os.IsNotExist(err) {
+		if err := os.WriteFile(file, []byte(header), 0644); err != nil {
+			Fatal("can't create list file:", file, err)
+		}
+		fmt.Println("已自动创建名单文件:", file)
+	} else if err != nil {
+		Fatal("fail to get list file:", file, err)
+	}
+}
+
+func appendMissingConfigOptions(rc string) {
+	data, err := os.ReadFile(rc)
+	if err != nil {
+		Fatal("Error opening config file:", err)
+	}
+	exists := make(map[string]bool)
+	lines := strings.Split(string(data), "\n")
+	for _, raw := range lines {
+		line := strings.TrimSpace(strings.TrimRight(raw, "\r"))
+		line = strings.TrimPrefix(line, "\ufeff")
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		v := strings.SplitN(line, "=", 2)
+		if len(v) == 2 {
+			exists[strings.TrimSpace(v[0])] = true
+		}
+	}
+
+	var missing []configOptionTemplate
+	for _, opt := range defaultConfigOptions() {
+		if !exists[opt.Key] {
+			missing = append(missing, opt)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+
+	f, err := os.OpenFile(rc, os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		Fatal("can't append config file:", err)
+	}
+	defer f.Close()
+
+	if _, err = io.WriteString(f, newLine+"#############################"+newLine+"# 以下配置项由当前版本自动补全，请按需取消注释并修改"+newLine+"#############################"+newLine); err != nil {
+		Fatal("can't append config file:", err)
+	}
+	for _, opt := range missing {
+		if _, err = io.WriteString(f, strings.ReplaceAll(opt.Body, "\n", newLine)+newLine); err != nil {
+			Fatal("can't append config file:", err)
+		}
+	}
+	fmt.Printf("检测到配置文件缺少 %d 个配置项，已自动补全说明: %s\n", len(missing), rc)
 }
 
 // overrideConfig should contain options from command line to override options

@@ -291,8 +291,29 @@ func md5sum(ss ...string) string {
 }
 
 // hostIsIP determines whether a host address is an IP address and whether
-// it is private. Currenly only handles IPv4 addresses.
+// it is private. Handles both IPv4 and IPv6 addresses.
 func hostIsIP(host string) (isIP, isPrivate bool) {
+	if strings.Contains(host, ":") {
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return false, false
+		}
+		ip = ip.To16()
+		if ip == nil {
+			return false, false
+		}
+		if ip.IsLoopback() || ip.IsUnspecified() {
+			return true, true
+		}
+		if ip[0] == 0xfc || ip[0] == 0xfd {
+			return true, true
+		}
+		if ip[0] == 0xfe && (ip[1]&0xc0) == 0x80 {
+			return true, true
+		}
+		return true, false
+	}
+
 	part := strings.Split(host, ".")
 	if len(part) != 4 {
 		return false, false
@@ -415,6 +436,21 @@ func ip2long(ipstr string) (uint32, error) {
 		return 0, errors.New("Not IPv4")
 	}
 	return binary.BigEndian.Uint32(ip), nil
+}
+
+// ip2long6 converts IPv6 address to two uint64 values (high and low 64 bits)
+func ip2long6(ipstr string) (uint64, uint64, error) {
+	ip := net.ParseIP(ipstr)
+	if ip == nil {
+		return 0, 0, errors.New("Invalid IP")
+	}
+	ip = ip.To16()
+	if ip == nil {
+		return 0, 0, errors.New("Not IPv6")
+	}
+	high := binary.BigEndian.Uint64(ip[0:8])
+	low := binary.BigEndian.Uint64(ip[8:16])
+	return high, low, nil
 }
 
 // search between [start, end]

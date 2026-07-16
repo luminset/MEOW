@@ -1,0 +1,14 @@
+github.com/aead/chacha20 v0.0.0-20180709150244-8b13a72661da h1:KjTM2ks9d14ZYCvmHS9iAKVt9AyzRSqNU1qabPih5BY=
+github.com/aead/chacha20 v0.0.0-20180709150244-8b13a72661da/go.mod h1:eHEWzANqSiWQsof+nXEI9bUVUyV6F53Fp89EuCh2EAA=
+github.com/cyfdecyf/bufio v0.0.0-20130801052708-9601756e2a6b h1:IbXtWKo69Qt6jYo52e+u/UlHRQWn+KtVZta5cby90BA=
+github.com/cyfdecyf/bufio v0.0.0-20130801052708-9601756e2a6b/go.mod h1:DQSIy5um0bRxHkx+PH04spgFRk5RqHGi0sHxiv5Ws3g=
+github.com/cyfdecyf/color v0.0.0-20130827105946-31d518c963d2 h1:Oe1e6HKSKb4HmtFqrucyQUcA1lVuttAf0oKHC4ggaQw=
+github.com/cyfdecyf/color v0.0.0-20130827105946-31d518c963d2/go.mod h1:mV04dyd0XpcvkTDehKbH1yGJE03Od3P88OZ/urLUqvw=
+github.com/cyfdecyf/leakybuf v0.0.0-20140618011800-ffae040843be h1:TJvjsUzf1Bqz73jxyy8mnvmOUl2I+Mp7SXNVtvPuHW4=
+github.com/cyfdecyf/leakybuf v0.0.0-20140618011800-ffae040843be/go.mod h1:OvIOPiANV24DVDhJDhNQh6NsAgC6mA1o0wc09vWXVkQ=
+github.com/shadowsocks/shadowsocks-go v0.0.0-20200409064450-3e585ff90601 h1:XU9hik0exChEmY92ALW4l9WnDodxLVS9yOSNh2SizaQ=
+github.com/shadowsocks/shadowsocks-go v0.0.0-20200409064450-3e585ff90601/go.mod h1:mttDPaeLm87u74HMrP+n2tugXvIKWcwff/cqSX0lehY=
+golang.org/x/crypto v0.54.0 h1:YLIA59K4fiNzHzjnZt2tUJQjQtUWfWbeHBqKtk3eScw=
+golang.org/x/crypto v0.54.0/go.mod h1:KWL8ny2AZdGR2cWmzeHrp2azQPGogOv+HeQaVEXC2dk=
+golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=
+golang.org/x/sys v0.47.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=

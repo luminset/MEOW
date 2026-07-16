@@ -1,4 +1,21 @@
 ## 更新说明
+- 2026-07-16 Version 1.5-nohafix3
+
+       * 新增 Go Modules 支持，补充 `go.mod` 与 `go.sum`
+       * 修复现代 Go 环境下的编译问题，包括 `chinaip_gen.go` 文件头异常字符、IPv6 数据重复声明、测试函数命名问题
+       * 成功支持 Windows amd64 本机构建，以及 Linux ARMv7、Linux ARM64 交叉编译输出
+       * Windows 下缺少 `rc.txt` 时不再直接退出，改为自动创建默认配置文件
+       * 自动创建 `direct.txt`、`proxy.txt`、`reject.txt` 名单文件，并输出提示信息
+       * 旧配置文件缺少新配置项时，自动追加缺失配置项及说明，不覆盖用户已有配置
+       * 修复 Windows UTF-8 BOM 导致第一行配置项无法识别的问题
+       * 自定义 `directFile`、`proxyFile`、`rejectFile` 指向的名单文件不存在时自动创建
+       * 增强 `direct`、`proxy`、`reject` 名单规则，支持具体 IP、CIDR、IP 范围、具体域名、二级域名、域名通配符、URL path/query 片段匹配
+       * 命中 `reject` 黑名单时返回程序自带 `403 Forbidden` 拦截页，提示访问地址已被拦截
+       * 新增 `proxyMode` 配置项，支持 `default`、`keep`、`cow` 三种代理模式
+       * `default` 模式保持原 MEOW 白名单模式不变
+       * `keep` 保连接模式在所有上游代理失败后尝试直连目标网站
+       * `cow` 模式默认直连，直连失败后快速切换为上游代理尝试连接
+
 - 2016-09-29 Version 1.5
 
        * 更新中国IP列表

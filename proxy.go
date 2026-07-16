@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
-	"time"
-	"os"
 	"syscall"
+	"time"
 
 	"github.com/cyfdecyf/bufio"
 	"github.com/cyfdecyf/leakybuf"
@@ -546,9 +546,11 @@ func (c *clientConn) handleServerReadError(r *Request, sv *serverConn, err error
 		return err
 	}
 	if isErrTimeout(err) || isErrConnReset(err) || isHttpErrCode(err) {
+		reportParentFailure(sv.Conn, err)
 		return err
 	}
 	if r.responseNotSent() {
+		reportParentFailure(sv.Conn, err)
 		sendErrorPage(c, "502 read error", err.Error(), genErrMsg(r, sv, msg))
 		return errPageSent
 	}
@@ -557,6 +559,9 @@ func (c *clientConn) handleServerReadError(r *Request, sv *serverConn, err error
 }
 
 func (c *clientConn) handleServerWriteError(r *Request, sv *serverConn, err error, msg string) error {
+	if sv != nil {
+		reportParentFailure(sv.Conn, err)
+	}
 	return err
 }
 
@@ -655,7 +660,8 @@ func (c *clientConn) getServerConn(r *Request) (*serverConn, error) {
 	direct := (domainType == domainTypeDirect)
 	if domainType == domainTypeReject {
 		dbgRq.Printf("%s REJECT\n", r.URL)
-		return nil, errors.New("Reject")
+		sendBlockedPage(c, r)
+		return nil, errPageSent
 	}
 
 	if r.isConnect {
@@ -681,7 +687,7 @@ func (c *clientConn) getServerConn(r *Request) (*serverConn, error) {
 func connectDirect2(url *URL, recursive bool) (net.Conn, error) {
 	var c net.Conn
 	var err error
-	c, err = net.Dial("tcp", url.HostPort)
+	c, err = dialTCP(url.HostPort)
 	if err != nil {
 		debug.Printf("error direct connect to: %s %v\n", url.HostPort, err)
 		if isErrTooManyOpenFd(err) && !recursive {
@@ -729,17 +735,38 @@ func isErrTooManyOpenFd(err error) bool {
 // If direct connection fails, try parent proxies.
 func (c *clientConn) connect(r *Request, direct bool) (srvconn net.Conn, err error) {
 	var errMsg string
+	var directErr, parentErr error
 
 	if direct {
 		dbgPrintRq(c, r, true)
 		if srvconn, err = connectDirect(r.URL); err == nil {
 			return
 		}
+		directErr = err
+		if config.ProxyMode == proxyModeCow && !parentProxy.empty() {
+			debug.Printf("cow mode direct connection failed, try parent proxy: %v", directErr)
+			dbgPrintRq(c, r, false)
+			if srvconn, err = parentProxy.connect(r.URL); err == nil {
+				return
+			}
+			errMsg = genErrMsg(r, nil, "Direct connection failed, and parent proxy fallback also failed.")
+			goto fail
+		}
+		err = directErr
 		errMsg = genErrMsg(r, nil, "Direct connection failed.")
 		goto fail
 	}
 
 	if parentProxy.empty() {
+		if config.ProxyMode == proxyModeKeep {
+			debug.Printf("keep mode has no parent proxy, try direct fallback")
+			dbgPrintRq(c, r, true)
+			if srvconn, err = connectDirect(r.URL); err == nil {
+				return
+			}
+			errMsg = genErrMsg(r, nil, "No parent proxy, and direct fallback also failed.")
+			goto fail
+		}
 		errMsg = genErrMsg(r, nil, "No parent proxy.")
 		goto fail
 	}
@@ -749,10 +776,25 @@ func (c *clientConn) connect(r *Request, direct bool) (srvconn net.Conn, err err
 	if srvconn, err = parentProxy.connect(r.URL); err == nil {
 		return
 	}
+	parentErr = err
+	if config.ProxyMode == proxyModeKeep {
+		debug.Printf("keep mode parent proxy connection failed, try direct fallback: %v", parentErr)
+		dbgPrintRq(c, r, true)
+		if srvconn, err = connectDirect(r.URL); err == nil {
+			return
+		}
+		errMsg = genErrMsg(r, nil, "Parent proxy connection failed, and direct fallback also failed.")
+		goto fail
+	}
+	err = parentErr
 	errMsg = genErrMsg(r, nil, "Parent proxy connection failed.")
 
 fail:
-	sendErrorPage(c, "504 Connection failed", err.Error(), errMsg)
+	errText := "Connection failed"
+	if err != nil {
+		errText = err.Error()
+	}
+	sendErrorPage(c, "504 Connection failed", errText, errMsg)
 	return nil, errPageSent
 }
 
@@ -978,6 +1020,9 @@ func (sv *serverConn) doConnect(r *Request, c *clientConn) (err error) {
 
 	// debug.Printf("doConnect: srv(%s)->cli(%s)\n", r.URL.HostPort, c.RemoteAddr())
 	err = copyServer2Client(sv, c, r)
+	if err != nil {
+		reportParentFailure(sv.Conn, err)
+	}
 	if isErrTimeout(err) || isErrConnReset(err) || isHttpErrCode(err) {
 		srvStopped.notify()
 		<-done

@@ -72,3 +72,22 @@ func TestParseProxy(t *testing.T) {
 		t.Fatal("shadowsocks proxy parsed not as shadowsocksParent")
 	}
 }
+
+func TestParseProxyMode(t *testing.T) {
+	parser := configParser{}
+
+	parser.ParseProxyMode("default")
+	if config.ProxyMode != proxyModeDefault {
+		t.Error("proxyMode default parse error")
+	}
+
+	parser.ParseProxyMode("keep")
+	if config.ProxyMode != proxyModeKeep {
+		t.Error("proxyMode keep parse error")
+	}
+
+	parser.ParseProxyMode("cow")
+	if config.ProxyMode != proxyModeCow {
+		t.Error("proxyMode cow parse error")
+	}
+}

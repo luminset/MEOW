@@ -21,6 +21,7 @@ import (
 // Interface that all types of parent proxies should support.
 type ParentProxy interface {
 	connect(*URL) (net.Conn, error)
+	probe(*URL) (time.Duration, error)
 	getServer() string // for use in updating server latency
 	genConfig() string // for upgrading config
 }
@@ -37,6 +38,85 @@ type ParentPool interface {
 // Init parentProxy to be backup pool. So config parsing have a pool to add
 // parent proxies.
 var parentProxy ParentPool = &backupParentPool{}
+
+var parentProbeURL = &URL{
+	HostPort: "www.google.com:443",
+	Host:     "www.google.com",
+	Port:     "443",
+	Domain:   "google.com",
+}
+
+func effectiveDialTimeout() time.Duration {
+	if config.DialTimeout > 0 {
+		return config.DialTimeout
+	}
+	return 10 * time.Second
+}
+
+func dialTCP(addr string) (net.Conn, error) {
+	return net.DialTimeout("tcp", addr, effectiveDialTimeout())
+}
+
+func tlsDialTCP(addr string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: effectiveDialTimeout()}
+	return tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
+		InsecureSkipVerify: true,
+	})
+}
+
+func probeByConnect(parent ParentProxy, url *URL) (time.Duration, error) {
+	now := time.Now()
+	c, err := parent.connect(url)
+	if err != nil {
+		return latencyMax, err
+	}
+	c.Close()
+	return time.Now().Sub(now), nil
+}
+
+func probeHTTPParentConn(c net.Conn, authHeader []byte, url *URL) error {
+	c.SetDeadline(time.Now().Add(effectiveDialTimeout()))
+	defer c.SetDeadline(zeroTime)
+
+	if _, err := fmt.Fprintf(c, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n", url.HostPort, url.HostPort); err != nil {
+		return err
+	}
+	if authHeader != nil {
+		if _, err := c.Write(authHeader); err != nil {
+			return err
+		}
+	}
+	if _, err := c.Write([]byte(CRLF)); err != nil {
+		return err
+	}
+
+	line := make([]byte, 0, 64)
+	buf := make([]byte, 1)
+	for len(line) < 256 {
+		if _, err := c.Read(buf); err != nil {
+			return err
+		}
+		line = append(line, buf[0])
+		if buf[0] == '\n' {
+			break
+		}
+	}
+	if len(line) < 12 {
+		return fmt.Errorf("parent proxy CONNECT probe malformed response: %q", string(line))
+	}
+	status, err := strconv.Atoi(string(line[9:12]))
+	if err != nil {
+		return fmt.Errorf("parent proxy CONNECT probe malformed status: %q", string(line))
+	}
+	if status == 200 {
+		return nil
+	}
+	if config.ParentProbeFailStatus != nil && config.ParentProbeFailStatus[status] {
+		return fmt.Errorf("parent proxy CONNECT probe failed with configured status %d: %q", status, string(line))
+	}
+	debug.Printf("parent proxy CONNECT probe got status %d but parentProbeFailStatus does not mark it unavailable\n", status)
+	return nil
+}
 
 func initParentPool() {
 	backPool, ok := parentProxy.(*backupParentPool)
@@ -61,8 +141,9 @@ func initParentPool() {
 		parentProxy = &hashParentPool{*backPool}
 	case loadBalanceLatency:
 		debug.Println("latency parent pool", len(backPool.parent))
-		go updateParentProxyLatency()
-		parentProxy = newLatencyParentPool(backPool.parent)
+		lp := newLatencyParentPool(backPool.parent)
+		parentProxy = lp
+		go lp.updateLatencyLoop()
 	}
 }
 
@@ -117,17 +198,66 @@ func (pp *hashParentPool) connect(url *URL) (srvconn net.Conn, err error) {
 	return connectInOrder(url, pp.parent, start)
 }
 
+const maxParentFailCnt = 30
+
 func (parent *ParentWithFail) connect(url *URL) (srvconn net.Conn, err error) {
-	const maxFailCnt = 30
 	srvconn, err = parent.ParentProxy.connect(url)
 	if err != nil {
-		if parent.fail < maxFailCnt {
-			parent.fail++
-		}
+		parent.markFailure()
 		return
 	}
 	parent.fail = 0
 	return
+}
+
+func (parent *ParentWithFail) markFailure() {
+	if parent.fail < maxParentFailCnt {
+		parent.fail++
+	}
+}
+
+func (pp *backupParentPool) markFailure(server string) {
+	for i := range pp.parent {
+		if pp.parent[i].getServer() == server {
+			pp.parent[i].markFailure()
+			return
+		}
+	}
+}
+
+func parentServerFromConn(c net.Conn) string {
+	switch pc := c.(type) {
+	case httpConn:
+		return pc.parent.getServer()
+	case httpsConn:
+		return pc.parent.getServer()
+	case shadowsocksConn:
+		return pc.parent.getServer()
+	case meowConn:
+		return pc.parent.getServer()
+	case socksConn:
+		return pc.parent.getServer()
+	}
+	return ""
+}
+
+func reportParentFailure(c net.Conn, err error) {
+	if !config.ParentFailureFeedback || c == nil {
+		return
+	}
+	server := parentServerFromConn(c)
+	if server == "" {
+		return
+	}
+	debug.Println("mark parent proxy failure from request stage:", server, err)
+	switch pp := parentProxy.(type) {
+	case *backupParentPool:
+		pp.markFailure(server)
+	case *hashParentPool:
+		(&pp.backupParentPool).markFailure(server)
+	case *latencyParentPool:
+		pp.markLatencyMax(server)
+	}
 }
 
 func connectInOrder(url *URL, pp []ParentWithFail, start int) (srvconn net.Conn, err error) {
@@ -208,7 +338,7 @@ func (pp *latencyParentPool) connect(url *URL) (srvconn net.Conn, err error) {
 	var lp []ParentWithLatency
 	// Read slice first.
 	latencyMutex.RLock()
-	lp = pp.parent
+	lp = append(lp, pp.parent...)
 	latencyMutex.RUnlock()
 
 	var skipped []int
@@ -218,7 +348,7 @@ func (pp *latencyParentPool) connect(url *URL) (srvconn net.Conn, err error) {
 	}
 
 	for i := 0; i < nproxy; i++ {
-		parent := lp[i]
+		parent := &lp[i]
 		if parent.latency >= latencyMax {
 			skipped = append(skipped, i)
 			continue
@@ -228,6 +358,7 @@ func (pp *latencyParentPool) connect(url *URL) (srvconn net.Conn, err error) {
 			return
 		}
 		parent.latency = latencyMax
+		pp.markLatencyMax(parent.getServer())
 	}
 	// last resort, try skipped one, not likely to succeed
 	for _, skippedId := range skipped {
@@ -243,35 +374,25 @@ func (parent *ParentWithLatency) updateLatency(wg *sync.WaitGroup) {
 	proxy := parent.ParentProxy
 	server := proxy.getServer()
 
-	host, port, err := net.SplitHostPort(server)
-	if err != nil {
-		panic("split host port parent server error" + err.Error())
-	}
-
-	// Resolve host name first, so latency does not include resolve time.
-	ip, err := net.LookupIP(host)
-	if err != nil {
-		parent.latency = latencyMax
-		return
-	}
-	ipPort := net.JoinHostPort(ip[0].String(), port)
-
 	const N = 3
 	var total time.Duration
+	var okCnt int
 	for i := 0; i < N; i++ {
-		now := time.Now()
-		cn, err := net.Dial("tcp", ipPort)
+		latency, err := proxy.probe(parentProbeURL)
 		if err != nil {
-			debug.Println("latency update dial:", err)
+			debug.Println("latency update probe:", server, err)
 			total += time.Minute // 1 minute as penalty
-			continue
+		} else {
+			total += latency
+			okCnt++
 		}
-		total += time.Now().Sub(now)
-		cn.Close()
-
 		time.Sleep(5 * time.Millisecond)
 	}
-	parent.latency = total / N
+	if okCnt == 0 {
+		parent.latency = latencyMax
+	} else {
+		parent.latency = total / N
+	}
 	debug.Println("latency", server, parent.latency)
 }
 
@@ -299,14 +420,21 @@ func (pp *latencyParentPool) updateLatency() {
 	latencyMutex.Unlock()
 }
 
-func updateParentProxyLatency() {
-	lp, ok := parentProxy.(*latencyParentPool)
-	if !ok {
-		return
-	}
+func (pp *latencyParentPool) markLatencyMax(server string) {
+	latencyMutex.Lock()
+	defer latencyMutex.Unlock()
 
+	for i := range pp.parent {
+		if pp.parent[i].getServer() == server {
+			pp.parent[i].latency = latencyMax
+			return
+		}
+	}
+}
+
+func (pp *latencyParentPool) updateLatencyLoop() {
 	for {
-		lp.updateLatency()
+		pp.updateLatency()
 		time.Sleep(60 * time.Second)
 	}
 }
@@ -352,9 +480,7 @@ func (hp *httpsParent) initAuth(userPasswd string) {
 }
 
 func (hp *httpsParent) connect(url *URL) (net.Conn, error) {
-	c, err := tls.Dial("tcp", hp.server, &tls.Config{
-		InsecureSkipVerify: true,
-	})
+	c, err := tlsDialTCP(hp.server)
 	if err != nil {
 		errl.Printf("can't connect to https parent %s for %s: %v\n",
 			hp.server, url.HostPort, err)
@@ -364,6 +490,19 @@ func (hp *httpsParent) connect(url *URL) (net.Conn, error) {
 	debug.Printf("connected to: %s via https parent: %s\n",
 		url.HostPort, hp.server)
 	return httpsConn{c, hp}, nil
+}
+
+func (hp *httpsParent) probe(url *URL) (time.Duration, error) {
+	now := time.Now()
+	c, err := tlsDialTCP(hp.server)
+	if err != nil {
+		return latencyMax, err
+	}
+	defer c.Close()
+	if err = probeHTTPParentConn(c, hp.authHeader, url); err != nil {
+		return latencyMax, err
+	}
+	return time.Now().Sub(now), nil
 }
 
 // http parent proxy
@@ -408,7 +547,7 @@ func (hp *httpParent) initAuth(userPasswd string) {
 }
 
 func (hp *httpParent) connect(url *URL) (net.Conn, error) {
-	c, err := net.Dial("tcp", hp.server)
+	c, err := dialTCP(hp.server)
 	if err != nil {
 		errl.Printf("can't connect to http parent %s for %s: %v\n",
 			hp.server, url.HostPort, err)
@@ -417,6 +556,19 @@ func (hp *httpParent) connect(url *URL) (net.Conn, error) {
 	debug.Printf("connected to: %s via http parent: %s\n",
 		url.HostPort, hp.server)
 	return httpConn{c, hp}, nil
+}
+
+func (hp *httpParent) probe(url *URL) (time.Duration, error) {
+	now := time.Now()
+	c, err := dialTCP(hp.server)
+	if err != nil {
+		return latencyMax, err
+	}
+	defer c.Close()
+	if err = probeHTTPParentConn(c, hp.authHeader, url); err != nil {
+		return latencyMax, err
+	}
+	return time.Now().Sub(now), nil
 }
 
 // shadowsocks parent proxy
@@ -477,6 +629,10 @@ func (sp *shadowsocksParent) connect(url *URL) (net.Conn, error) {
 	return shadowsocksConn{c, sp}, nil
 }
 
+func (sp *shadowsocksParent) probe(url *URL) (time.Duration, error) {
+	return probeByConnect(sp, url)
+}
+
 // meow parent proxy
 type meowParent struct {
 	server string
@@ -515,7 +671,7 @@ func (cp *meowParent) genConfig() string {
 }
 
 func (cp *meowParent) connect(url *URL) (net.Conn, error) {
-	c, err := net.Dial("tcp", cp.server)
+	c, err := dialTCP(cp.server)
 	if err != nil {
 		errl.Printf("can't connect to meow parent %s for %s: %v\n",
 			cp.server, url.HostPort, err)
@@ -525,6 +681,19 @@ func (cp *meowParent) connect(url *URL) (net.Conn, error) {
 		url.HostPort, cp.server)
 	ssconn := ss.NewConn(c, cp.cipher.Copy())
 	return meowConn{ssconn, cp}, nil
+}
+
+func (cp *meowParent) probe(url *URL) (time.Duration, error) {
+	now := time.Now()
+	c, err := cp.connect(url)
+	if err != nil {
+		return latencyMax, err
+	}
+	defer c.Close()
+	if err = probeHTTPParentConn(c, nil, url); err != nil {
+		return latencyMax, err
+	}
+	return time.Now().Sub(now), nil
 }
 
 // For socks documentation, refer to rfc 1928 http://www.ietf.org/rfc/rfc1928.txt
@@ -576,12 +745,14 @@ func (sp *socksParent) genConfig() string {
 }
 
 func (sp *socksParent) connect(url *URL) (net.Conn, error) {
-	c, err := net.Dial("tcp", sp.server)
+	c, err := dialTCP(sp.server)
 	if err != nil {
 		errl.Printf("can't connect to socks parent %s for %s: %v\n",
 			sp.server, url.HostPort, err)
 		return nil, err
 	}
+	c.SetDeadline(time.Now().Add(effectiveDialTimeout()))
+	defer c.SetDeadline(zeroTime)
 	hasErr := false
 	defer func() {
 		if hasErr {
@@ -670,4 +841,8 @@ func (sp *socksParent) connect(url *URL) (net.Conn, error) {
 	debug.Println("connected to:", url.HostPort, "via socks server:", sp.server)
 	// Now the socket can be used to pass data.
 	return socksConn{c, sp}, nil
+}
+
+func (sp *socksParent) probe(url *URL) (time.Duration, error) {
+	return probeByConnect(sp, url)
 }
