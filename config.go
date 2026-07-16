@@ -755,7 +755,7 @@ func ensureConfigFiles(rc string) {
 	ensureDomainListFile(config.RejectFile, "# 黑名单：命中后返回 MEOW 自带拦截页。支持 IP、CIDR、IP 范围、域名、通配符、URL path/query 片段。"+newLine+"# 示例：*.ads.example.com"+newLine+"# 示例：/ad/"+newLine+"# 示例：?ad.js"+newLine)
 
 	if !created {
-		appendMissingConfigOptions(rc)
+		syncConfigOptions(rc)
 	}
 }
 
@@ -788,24 +788,14 @@ func ensureDomainListFile(file, header string) {
 	}
 }
 
-func appendMissingConfigOptions(rc string) {
+func syncConfigOptions(rc string) {
 	data, err := os.ReadFile(rc)
 	if err != nil {
 		Fatal("Error opening config file:", err)
 	}
-	exists := make(map[string]bool)
-	lines := strings.Split(string(data), "\n")
-	for _, raw := range lines {
-		line := strings.TrimSpace(strings.TrimRight(raw, "\r"))
-		line = strings.TrimPrefix(line, "\ufeff")
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		v := strings.SplitN(line, "=", 2)
-		if len(v) == 2 {
-			exists[strings.TrimSpace(v[0])] = true
-		}
-	}
+	lines := splitConfigLines(string(data))
+	cleanLines, removedDuplicate := cleanupConfigOptionBlocks(lines)
+	exists := collectConfigOptionKeys(cleanLines)
 
 	var missing []configOptionTemplate
 	for _, opt := range defaultConfigOptions() {
@@ -813,25 +803,142 @@ func appendMissingConfigOptions(rc string) {
 			missing = append(missing, opt)
 		}
 	}
-	if len(missing) == 0 {
+	if len(missing) == 0 && !removedDuplicate {
 		return
 	}
 
-	f, err := os.OpenFile(rc, os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		Fatal("can't append config file:", err)
-	}
-	defer f.Close()
-
-	if _, err = io.WriteString(f, newLine+"#############################"+newLine+"# 以下配置项由当前版本自动补全，请按需取消注释并修改"+newLine+"#############################"+newLine); err != nil {
-		Fatal("can't append config file:", err)
+	cleanLines = trimTrailingEmptyLines(cleanLines)
+	out := strings.Join(cleanLines, newLine)
+	if out != "" {
+		out += newLine
 	}
 	for _, opt := range missing {
-		if _, err = io.WriteString(f, strings.ReplaceAll(opt.Body, "\n", newLine)+newLine); err != nil {
-			Fatal("can't append config file:", err)
+		out += strings.ReplaceAll(opt.Body, "\n", newLine) + newLine
+	}
+	if err := os.WriteFile(rc, []byte(out), 0644); err != nil {
+		Fatal("can't update config file:", err)
+	}
+	if len(missing) > 0 {
+		fmt.Printf("检测到配置文件缺少 %d 个配置分组，已自动补全说明: %s\n", len(missing), rc)
+	}
+	if removedDuplicate {
+		fmt.Printf("已清理配置文件中重复的自动补全配置分组: %s\n", rc)
+	}
+}
+
+func splitConfigLines(data string) []string {
+	data = strings.ReplaceAll(data, "\r\n", "\n")
+	data = strings.ReplaceAll(data, "\r", "\n")
+	lines := strings.Split(data, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+func trimTrailingEmptyLines(lines []string) []string {
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+func configOptionKeySet() map[string]bool {
+	keys := make(map[string]bool)
+	for _, opt := range defaultConfigOptions() {
+		keys[opt.Key] = true
+	}
+	return keys
+}
+
+func configOptionKeyFromLine(line string, keys map[string]bool) (key string, commented bool, ok bool) {
+	line = strings.TrimSpace(strings.TrimRight(line, "\r"))
+	line = strings.TrimPrefix(line, "\ufeff")
+	if strings.HasPrefix(line, "#") {
+		commented = true
+		line = strings.TrimSpace(strings.TrimPrefix(line, "#"))
+	}
+	v := strings.SplitN(line, "=", 2)
+	if len(v) != 2 {
+		return "", commented, false
+	}
+	key = strings.TrimSpace(v[0])
+	if !keys[key] {
+		return "", commented, false
+	}
+	return key, commented, true
+}
+
+func collectConfigOptionKeys(lines []string) map[string]bool {
+	keys := configOptionKeySet()
+	exists := make(map[string]bool)
+	for _, line := range lines {
+		if key, _, ok := configOptionKeyFromLine(line, keys); ok {
+			exists[key] = true
 		}
 	}
-	fmt.Printf("检测到配置文件缺少 %d 个配置项，已自动补全说明: %s\n", len(missing), rc)
+	return exists
+}
+
+func cleanupConfigOptionBlocks(lines []string) ([]string, bool) {
+	keys := configOptionKeySet()
+	seen := make(map[string]bool)
+	cleaned := make([]string, 0, len(lines))
+	removed := false
+	for i := 0; i < len(lines); {
+		if isAutoConfigHeader(lines, i) {
+			i += 3
+			removed = true
+			continue
+		}
+		if key, commented, end, ok := generatedConfigBlock(lines, i, keys); ok {
+			if seen[key] && commented {
+				i = end
+				removed = true
+				continue
+			}
+			seen[key] = true
+			cleaned = append(cleaned, lines[i:end]...)
+			i = end
+			continue
+		}
+		if key, _, ok := configOptionKeyFromLine(lines[i], keys); ok {
+			seen[key] = true
+		}
+		cleaned = append(cleaned, lines[i])
+		i++
+	}
+	return cleaned, removed
+}
+
+func isAutoConfigHeader(lines []string, i int) bool {
+	if i+2 >= len(lines) {
+		return false
+	}
+	return strings.TrimSpace(lines[i]) == "#############################" &&
+		strings.Contains(lines[i+1], "以下配置项由当前版本自动补全") &&
+		strings.TrimSpace(lines[i+2]) == "#############################"
+}
+
+func generatedConfigBlock(lines []string, start int, keys map[string]bool) (key string, commented bool, end int, ok bool) {
+	if strings.TrimSpace(lines[start]) != "#############################" {
+		return "", false, start, false
+	}
+	end = start + 1
+	for end < len(lines) && strings.TrimSpace(lines[end]) != "" {
+		if k, c, found := configOptionKeyFromLine(lines[end], keys); found && key == "" {
+			key = k
+			commented = c
+		}
+		end++
+	}
+	if end < len(lines) {
+		end++
+	}
+	if key == "" {
+		return "", false, start, false
+	}
+	return key, commented, end, true
 }
 
 // overrideConfig should contain options from command line to override options

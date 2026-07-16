@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -218,4 +219,66 @@ func TestParseFileOptionsRelativeToConfigDir(t *testing.T) {
 	if config.QQWryFile != abs {
 		t.Fatalf("qqwryFile absolute path = %q, want %q", config.QQWryFile, abs)
 	}
+}
+
+func TestSyncConfigOptionsDeduplicatesGeneratedBlocks(t *testing.T) {
+	rc := filepath.Join(t.TempDir(), "rc")
+	content := strings.Join([]string{
+		"# 自定义配置",
+		"listen = http://127.0.0.1:4411",
+		"#parentProbeURL = 1.1.1.1:443",
+		"",
+		"#############################",
+		"# 以下配置项由当前版本自动补全，请按需取消注释并修改",
+		"#############################",
+		"#############################",
+		"# 二级代理连通性/延迟探测地址，仅 loadBalance = latency 时使用",
+		"#############################",
+		"#parentProbeURL = www.google.com:443",
+		"",
+		"#############################",
+		"# 以下配置项由当前版本自动补全，请按需取消注释并修改",
+		"#############################",
+		"#############################",
+		"# 二级代理连通性/延迟探测地址，仅 loadBalance = latency 时使用",
+		"#############################",
+		"#parentProbeURL = www.google.com:443",
+		"",
+	}, "\n")
+	if err := os.WriteFile(rc, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	syncConfigOptions(rc)
+	first, err := os.ReadFile(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstText := string(first)
+	if strings.Contains(firstText, "以下配置项由当前版本自动补全") {
+		t.Fatal("auto completion header should be cleaned")
+	}
+	if countConfigOptionKey(firstText, "parentProbeURL") != 1 {
+		t.Fatalf("parentProbeURL should appear once, got config:\n%s", firstText)
+	}
+
+	syncConfigOptions(rc)
+	second, err := os.ReadFile(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(second) != firstText {
+		t.Fatalf("syncConfigOptions should be idempotent\nfirst:\n%s\nsecond:\n%s", firstText, string(second))
+	}
+}
+
+func countConfigOptionKey(data, want string) int {
+	keys := configOptionKeySet()
+	var n int
+	for _, line := range splitConfigLines(data) {
+		if key, _, ok := configOptionKeyFromLine(line, keys); ok && key == want {
+			n++
+		}
+	}
+	return n
 }
