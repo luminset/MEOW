@@ -6,3 +6,6 @@ MEOW.exe
 direct.txt
 rc.txt
 rc-full.txt
+/meow-windows-*.exe
+/meow-linux-*
+/meow-darwin-*
