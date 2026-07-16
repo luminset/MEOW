@@ -114,9 +114,19 @@ func TestParseParentProbeOptions(t *testing.T) {
 		t.Fatalf("parentProbeURL parsed wrong: %+v", parentProbeURL)
 	}
 
+	parser.ParseParentProbeURL("1.1.1.1:443")
+	if config.ParentProbeURL != "1.1.1.1:443" {
+		t.Fatalf("IPv4 parentProbeURL = %q", config.ParentProbeURL)
+	}
+
 	parser.ParseParentProbeURL("[2001:4860:4860::8888]:443")
 	if config.ParentProbeURL != "[2001:4860:4860::8888]:443" {
 		t.Fatalf("IPv6 parentProbeURL = %q", config.ParentProbeURL)
+	}
+
+	parser.ParseParentProbeURL("")
+	if config.ParentProbeURL != defaultParentProbeURL {
+		t.Fatalf("empty parentProbeURL = %q, want %q", config.ParentProbeURL, defaultParentProbeURL)
 	}
 
 	parser.ParseParentProbeInterval("30s")

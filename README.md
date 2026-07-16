@@ -92,13 +92,16 @@ proxyMode = default
 
 ```ini
 # 二级代理连通性/延迟探测地址，仅 loadBalance = latency 时使用
-# 格式必须为 host:port，例如 www.google.com:443 或 [2001:4860:4860::8888]:443
+# 格式必须为 host:port；为空时使用默认值 www.google.com:443
+# 域名示例：www.google.com:443；IPv4 示例：1.1.1.1:443；IPv6 示例：[2001:4860:4860::8888]:443
 parentProbeURL = www.google.com:443
 
 # 二级代理连通性/延迟探测周期，仅 loadBalance = latency 时使用
 # 默认 60s；最小 10s，小于 10s 时会忽略配置并使用默认值，防止探测过于频繁
 parentProbeInterval = 60s
 ```
+
+配置解析策略：除明确允许空值的兼容项外，配置语法错误、未知配置项、非法数值、文件读取失败等都会输出错误并退出程序。`parentProbeURL` 是非关键探测地址，允许空值并回退到内置默认值。
 
 ## MEOW 可以用来
 - 作为全局 HTTP 代理（支持 PAC），可以智能分流（直连国内网站、使用代理连接其他网站）

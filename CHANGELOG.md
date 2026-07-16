@@ -21,6 +21,8 @@
        * 修复文件路径类配置项的相对路径解析，确保 `logFile`、`directFile`、`proxyFile`、`rejectFile`、`userPasswdFile`、`qqwryFile`、`cert`、`key` 均按 `rc` 文件所在目录读取
        * 新增 `parentProbeURL` 与 `parentProbeInterval` 配置项，仅在 `loadBalance = latency` 时用于上游代理连通性和延迟探测
        * `parentProbeInterval` 增加最小值保护，小于 10s 时自动回退到默认 60s，避免探测过于频繁
+       * `parentProbeURL` 支持域名、IPv4、IPv6 的 `host:port` 写法；空值视为非关键错误并回退到默认探测地址
+       * 配置文件空值和未知配置项错误增加行号提示，便于定位错误位置
 
 - 2016-09-29 Version 1.5
 

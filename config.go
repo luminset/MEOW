@@ -178,6 +178,15 @@ func parseDuration(val, msg string) (d time.Duration) {
 	return
 }
 
+func allowEmptyConfigValue(key string) bool {
+	switch key {
+	case "shadowMethod", "logFile", "parentProbeURL":
+		return true
+	default:
+		return false
+	}
+}
+
 func checkServerAddr(addr string) error {
 	_, _, err := net.SplitHostPort(addr)
 	return err
@@ -629,7 +638,15 @@ func (p configParser) ParseParentProbeFailStatus(val string) {
 }
 
 func (p configParser) ParseParentProbeURL(val string) {
-	probeURL, err := newParentProbeURL(strings.TrimSpace(val))
+	val = strings.TrimSpace(val)
+	if val == "" {
+		probeURL, _ := newParentProbeURL(defaultParentProbeURL)
+		parentProbeURL = probeURL
+		config.ParentProbeURL = probeURL.HostPort
+		fmt.Printf("parentProbeURL 为空，已使用默认值 %s\n", config.ParentProbeURL)
+		return
+	}
+	probeURL, err := newParentProbeURL(val)
 	if err != nil {
 		Fatal("parentProbeURL:", err)
 	}
@@ -704,7 +721,7 @@ func defaultConfigOptions() []configOptionTemplate {
 		{"httpErrorCode", "#############################\n# 将指定 HTTP error code 认为是被干扰并使用二级代理重试\n#############################\n#httpErrorCode = 403\n"},
 		{"parentFailureFeedback", "#############################\n# 请求阶段发生读写、超时、连接重置等错误时，将当前二级代理标记为失败\n#############################\n#parentFailureFeedback = true\n"},
 		{"parentProbeFailStatus", "#############################\n# 二级代理 CONNECT 探测时，指定哪些响应码视为代理不可用，多个状态码用逗号分隔\n#############################\n#parentProbeFailStatus = 403,407,502,503,504\n"},
-		{"parentProbeURL", "#############################\n# 二级代理连通性/延迟探测地址，仅 loadBalance = latency 时使用\n# 格式必须为 host:port，例如 www.google.com:443 或 [2001:4860:4860::8888]:443\n#############################\n#parentProbeURL = " + config.ParentProbeURL + "\n"},
+		{"parentProbeURL", "#############################\n# 二级代理连通性/延迟探测地址，仅 loadBalance = latency 时使用\n# 格式必须为 host:port；为空时使用默认值 " + defaultParentProbeURL + "\n# 域名示例：www.google.com:443；IPv4 示例：1.1.1.1:443；IPv6 示例：[2001:4860:4860::8888]:443\n#############################\n#parentProbeURL = " + config.ParentProbeURL + "\n"},
 		{"parentProbeInterval", "#############################\n# 二级代理连通性/延迟探测周期，仅 loadBalance = latency 时使用\n# 默认 60s；最小 10s，小于 10s 时会忽略配置并使用默认值，防止探测过于频繁\n#############################\n#parentProbeInterval = 60s\n"},
 		{"core", "#############################\n# 最多允许使用多少个 CPU 核\n#############################\n#core = 2\n"},
 		{"readTimeout", "#############################\n# 读取超时时间\n#############################\n#readTimeout = 2m\n"},
@@ -853,11 +870,10 @@ func parseConfig(rc string, override *Config) {
 		methodName := "Parse" + strings.ToUpper(key[0:1]) + key[1:]
 		method := parser.MethodByName(methodName)
 		if method == zeroMethod {
-			Fatalf("no such option \"%s\"\n", key)
+			Fatalf("no such option \"%s\" on line %d\n", key, n)
 		}
-		// for backward compatibility, allow empty string in shadowMethod and logFile
-		if val == "" && key != "shadowMethod" && key != "logFile" {
-			Fatalf("empty %s, please comment or remove unused option\n", key)
+		if val == "" && !allowEmptyConfigValue(key) {
+			Fatalf("empty %s on line %d, please comment or remove unused option\n", key, n)
 		}
 		args := []reflect.Value{reflect.ValueOf(val)}
 		method.Call(args)
