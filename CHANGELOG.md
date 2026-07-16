@@ -1,5 +1,5 @@
 ## 更新说明
-- 2026-07-16 Version 1.5-nohafix3
+- 2026-07-16 Version 1.5-nohafix6
 
        * 新增 Go Modules 支持，补充 `go.mod` 与 `go.sum`
        * 修复现代 Go 环境下的编译问题，包括 `chinaip_gen.go` 文件头异常字符、IPv6 数据重复声明、测试函数命名问题
