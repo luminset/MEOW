@@ -19,6 +19,8 @@
        * 新增 `qqwryFile`、`qqwryUpdateURL`、`qqwryUpdateInterval` 配置项，支持按频率后台更新本地 `QQWry.dat`
        * `QQWry.dat` 缺失或损坏时不阻塞程序启动，后台尝试更新，最低回退到内置 IP 库
        * 修复文件路径类配置项的相对路径解析，确保 `logFile`、`directFile`、`proxyFile`、`rejectFile`、`userPasswdFile`、`qqwryFile`、`cert`、`key` 均按 `rc` 文件所在目录读取
+       * 新增 `parentProbeURL` 与 `parentProbeInterval` 配置项，仅在 `loadBalance = latency` 时用于上游代理连通性和延迟探测
+       * `parentProbeInterval` 增加最小值保护，小于 10s 时自动回退到默认 60s，避免探测过于频繁
 
 - 2016-09-29 Version 1.5
 

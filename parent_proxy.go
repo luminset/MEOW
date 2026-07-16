@@ -18,6 +18,12 @@ import (
 	ss "github.com/shadowsocks/shadowsocks-go/shadowsocks"
 )
 
+const (
+	defaultParentProbeURL      = "www.google.com:443"
+	defaultParentProbeInterval = 60 * time.Second
+	minParentProbeInterval     = 10 * time.Second
+)
+
 // Interface that all types of parent proxies should support.
 type ParentProxy interface {
 	connect(*URL) (net.Conn, error)
@@ -39,11 +45,33 @@ type ParentPool interface {
 // parent proxies.
 var parentProxy ParentPool = &backupParentPool{}
 
-var parentProbeURL = &URL{
-	HostPort: "www.google.com:443",
-	Host:     "www.google.com",
-	Port:     "443",
-	Domain:   "google.com",
+var parentProbeURL, _ = newParentProbeURL(defaultParentProbeURL)
+
+func newParentProbeURL(hostPort string) (*URL, error) {
+	host, port, err := net.SplitHostPort(hostPort)
+	if err != nil {
+		return nil, fmt.Errorf("should be in host:port format: %v", err)
+	}
+	if host == "" || port == "" {
+		return nil, errors.New("host and port should not be empty")
+	}
+	portNum, err := strconv.Atoi(port)
+	if err != nil || portNum <= 0 || portNum > 65535 {
+		return nil, fmt.Errorf("invalid port: %s", port)
+	}
+	return &URL{
+		HostPort: net.JoinHostPort(host, port),
+		Host:     host,
+		Port:     port,
+		Domain:   host2Domain(host),
+	}, nil
+}
+
+func effectiveParentProbeInterval() time.Duration {
+	if config.ParentProbeInterval >= minParentProbeInterval {
+		return config.ParentProbeInterval
+	}
+	return defaultParentProbeInterval
 }
 
 func effectiveDialTimeout() time.Duration {
@@ -435,7 +463,7 @@ func (pp *latencyParentPool) markLatencyMax(server string) {
 func (pp *latencyParentPool) updateLatencyLoop() {
 	for {
 		pp.updateLatency()
-		time.Sleep(60 * time.Second)
+		time.Sleep(effectiveParentProbeInterval())
 	}
 }
 

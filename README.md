@@ -86,6 +86,20 @@ proxyMode = default
 - `keep`：保连接模式。默认判定逻辑不变；当请求需要走上游代理但所有上游代理连接失败时，程序会再尝试直接连接目标网站。
 - `cow`：COW 模式。未命中黑名单或显式代理规则时默认直连；如果直连失败且配置了上游代理，则快速切换为通过上游代理尝试连接。
 
+### 上游代理探测
+
+新增 `parentProbeURL` 和 `parentProbeInterval` 配置项，仅在 `loadBalance = latency` 时使用，用于探测各个上游代理的连通性和延迟。
+
+```ini
+# 二级代理连通性/延迟探测地址，仅 loadBalance = latency 时使用
+# 格式必须为 host:port，例如 www.google.com:443 或 [2001:4860:4860::8888]:443
+parentProbeURL = www.google.com:443
+
+# 二级代理连通性/延迟探测周期，仅 loadBalance = latency 时使用
+# 默认 60s；最小 10s，小于 10s 时会忽略配置并使用默认值，防止探测过于频繁
+parentProbeInterval = 60s
+```
+
 ## MEOW 可以用来
 - 作为全局 HTTP 代理（支持 PAC），可以智能分流（直连国内网站、使用代理连接其他网站）
 - 将 SOCKS5 等代理转换为 HTTP 代理，HTTP 代理能最大程度兼容各种软件（可以设置为程序代理）和设备（设置为系统全局代理）

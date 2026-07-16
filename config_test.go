@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestParseListen(t *testing.T) {
@@ -91,6 +92,41 @@ func TestParseProxyMode(t *testing.T) {
 	parser.ParseProxyMode("cow")
 	if config.ProxyMode != proxyModeCow {
 		t.Error("proxyMode cow parse error")
+	}
+}
+
+func TestParseParentProbeOptions(t *testing.T) {
+	oldParentProbeURL := parentProbeURL
+	oldConfigParentProbeURL := config.ParentProbeURL
+	oldParentProbeInterval := config.ParentProbeInterval
+	defer func() {
+		parentProbeURL = oldParentProbeURL
+		config.ParentProbeURL = oldConfigParentProbeURL
+		config.ParentProbeInterval = oldParentProbeInterval
+	}()
+
+	parser := configParser{}
+	parser.ParseParentProbeURL("example.com:443")
+	if config.ParentProbeURL != "example.com:443" {
+		t.Fatalf("parentProbeURL = %q, want example.com:443", config.ParentProbeURL)
+	}
+	if parentProbeURL.Host != "example.com" || parentProbeURL.Port != "443" || parentProbeURL.Domain != "example.com" {
+		t.Fatalf("parentProbeURL parsed wrong: %+v", parentProbeURL)
+	}
+
+	parser.ParseParentProbeURL("[2001:4860:4860::8888]:443")
+	if config.ParentProbeURL != "[2001:4860:4860::8888]:443" {
+		t.Fatalf("IPv6 parentProbeURL = %q", config.ParentProbeURL)
+	}
+
+	parser.ParseParentProbeInterval("30s")
+	if config.ParentProbeInterval != 30*time.Second {
+		t.Fatalf("parentProbeInterval = %s, want 30s", config.ParentProbeInterval)
+	}
+
+	parser.ParseParentProbeInterval("1s")
+	if config.ParentProbeInterval != defaultParentProbeInterval {
+		t.Fatalf("small parentProbeInterval = %s, want %s", config.ParentProbeInterval, defaultParentProbeInterval)
 	}
 }
 

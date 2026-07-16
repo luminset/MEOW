@@ -63,6 +63,8 @@ type Config struct {
 
 	ParentFailureFeedback bool
 	ParentProbeFailStatus map[int]bool
+	ParentProbeURL        string
+	ParentProbeInterval   time.Duration
 
 	Core int
 
@@ -106,6 +108,8 @@ func initConfig(rcFile string) {
 
 	config.JudgeByIP = true
 	config.ProxyMode = proxyModeDefault
+	config.ParentProbeURL = defaultParentProbeURL
+	config.ParentProbeInterval = defaultParentProbeInterval
 
 	config.AuthTimeout = 2 * time.Hour
 }
@@ -624,6 +628,26 @@ func (p configParser) ParseParentProbeFailStatus(val string) {
 	config.ParentProbeFailStatus = status
 }
 
+func (p configParser) ParseParentProbeURL(val string) {
+	probeURL, err := newParentProbeURL(strings.TrimSpace(val))
+	if err != nil {
+		Fatal("parentProbeURL:", err)
+	}
+	parentProbeURL = probeURL
+	config.ParentProbeURL = probeURL.HostPort
+}
+
+func (p configParser) ParseParentProbeInterval(val string) {
+	interval := parseDuration(val, "parentProbeInterval")
+	if interval < minParentProbeInterval {
+		fmt.Printf("parentProbeInterval %s 小于最小值 %s，已使用默认值 %s\n",
+			interval, minParentProbeInterval, defaultParentProbeInterval)
+		config.ParentProbeInterval = defaultParentProbeInterval
+		return
+	}
+	config.ParentProbeInterval = interval
+}
+
 func (p configParser) ParseReadTimeout(val string) {
 	config.ReadTimeout = parseDuration(val, "readTimeout")
 }
@@ -680,6 +704,8 @@ func defaultConfigOptions() []configOptionTemplate {
 		{"httpErrorCode", "#############################\n# 将指定 HTTP error code 认为是被干扰并使用二级代理重试\n#############################\n#httpErrorCode = 403\n"},
 		{"parentFailureFeedback", "#############################\n# 请求阶段发生读写、超时、连接重置等错误时，将当前二级代理标记为失败\n#############################\n#parentFailureFeedback = true\n"},
 		{"parentProbeFailStatus", "#############################\n# 二级代理 CONNECT 探测时，指定哪些响应码视为代理不可用，多个状态码用逗号分隔\n#############################\n#parentProbeFailStatus = 403,407,502,503,504\n"},
+		{"parentProbeURL", "#############################\n# 二级代理连通性/延迟探测地址，仅 loadBalance = latency 时使用\n# 格式必须为 host:port，例如 www.google.com:443 或 [2001:4860:4860::8888]:443\n#############################\n#parentProbeURL = " + config.ParentProbeURL + "\n"},
+		{"parentProbeInterval", "#############################\n# 二级代理连通性/延迟探测周期，仅 loadBalance = latency 时使用\n# 默认 60s；最小 10s，小于 10s 时会忽略配置并使用默认值，防止探测过于频繁\n#############################\n#parentProbeInterval = 60s\n"},
 		{"core", "#############################\n# 最多允许使用多少个 CPU 核\n#############################\n#core = 2\n"},
 		{"readTimeout", "#############################\n# 读取超时时间\n#############################\n#readTimeout = 2m\n"},
 		{"dialTimeout", "#############################\n# 连接超时时间\n#############################\n#dialTimeout = 30s\n"},
