@@ -7,7 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
-	"path"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -95,12 +95,12 @@ func printVersion() {
 }
 
 func initConfig(rcFile string) {
-	config.dir = path.Dir(rcFile)
-	config.DirectFile = path.Join(config.dir, directFname)
-	config.ProxyFile = path.Join(config.dir, proxyFname)
-	config.RejectFile = path.Join(config.dir, rejectFname)
-	config.CNIPFile = path.Join(config.dir, CNIPFname)
-	config.QQWryFile = path.Join(config.dir, QQWryFname)
+	config.dir = filepath.Dir(rcFile)
+	config.DirectFile = filepath.Join(config.dir, directFname)
+	config.ProxyFile = filepath.Join(config.dir, proxyFname)
+	config.RejectFile = filepath.Join(config.dir, rejectFname)
+	config.CNIPFile = filepath.Join(config.dir, CNIPFname)
+	config.QQWryFile = filepath.Join(config.dir, QQWryFname)
 	config.QQWryUpdateURL = defaultQQWryUpdateURL
 	config.QQWryUpdateInterval = 24 * time.Hour
 
@@ -386,7 +386,7 @@ func (p configParser) ParseListen(val string) {
 }
 
 func (p configParser) ParseLogFile(val string) {
-	config.LogFile = expandTilde(val)
+	config.LogFile = expandConfigPath(val)
 }
 
 func (p configParser) ParseAddrInPAC(val string) {
@@ -489,17 +489,17 @@ func (p configParser) ParseProxyMode(val string) {
 }
 
 func (p configParser) ParseDirectFile(val string) {
-	config.DirectFile = expandTilde(val)
+	config.DirectFile = expandConfigPath(val)
 	ensureDomainListFile(config.DirectFile, "# 白名单：命中后直连。支持 IP、CIDR、IP 范围、域名、通配符、URL path/query 片段。"+newLine)
 }
 
 func (p configParser) ParseProxyFile(val string) {
-	config.ProxyFile = expandTilde(val)
+	config.ProxyFile = expandConfigPath(val)
 	ensureDomainListFile(config.ProxyFile, "# 强制代理名单：命中后使用二级代理。支持 IP、CIDR、IP 范围、域名、通配符、URL path/query 片段。"+newLine)
 }
 
 func (p configParser) ParseRejectFile(val string) {
-	config.RejectFile = expandTilde(val)
+	config.RejectFile = expandConfigPath(val)
 	ensureDomainListFile(config.RejectFile, "# 黑名单：命中后返回 MEOW 自带拦截页。支持 IP、CIDR、IP 范围、域名、通配符、URL path/query 片段。"+newLine)
 }
 
@@ -580,11 +580,12 @@ func (p configParser) ParseUserPasswd(val string) {
 }
 
 func (p configParser) ParseUserPasswdFile(val string) {
-	err := isFileExists(val)
+	userPasswdFile := expandConfigPath(val)
+	err := isFileExists(userPasswdFile)
 	if err != nil {
 		Fatal("userPasswdFile:", err)
 	}
-	config.UserPasswdFile = val
+	config.UserPasswdFile = userPasswdFile
 }
 
 func (p configParser) ParseAllowedClient(val string) {
@@ -636,7 +637,7 @@ func (p configParser) ParseJudgeByIP(val string) {
 }
 
 func (p configParser) ParseQQWryFile(val string) {
-	config.QQWryFile = expandTilde(val)
+	config.QQWryFile = expandConfigPath(val)
 }
 
 func (p configParser) ParseQQWryUpdateURL(val string) {
@@ -648,11 +649,11 @@ func (p configParser) ParseQQWryUpdateInterval(val string) {
 }
 
 func (p configParser) ParseCert(val string) {
-	config.Cert = val
+	config.Cert = expandConfigPath(val)
 }
 
 func (p configParser) ParseKey(val string) {
-	config.Key = val
+	config.Key = expandConfigPath(val)
 }
 
 type configOptionTemplate struct {
@@ -664,17 +665,17 @@ func defaultConfigOptions() []configOptionTemplate {
 	return []configOptionTemplate{
 		{"listen", "#############################\n# 监听地址，设为 0.0.0.0 可以监听所有网卡并共享给局域网使用\n#############################\nlisten = http://" + defaultListenAddr + "\n"},
 		{"judgeByIP", "#############################\n# 通过 IP 判断是否直连，默认开启\n#############################\n#judgeByIP = true\n"},
-		{"qqwryFile", "#############################\n# QQWry.dat 本地 IP 库路径；默认与 rc 文件在同一目录\n# 仅用于 IPv4，读取失败时自动回退到内置中国 IP 库\n#############################\n#qqwryFile = " + config.QQWryFile + "\n"},
+		{"qqwryFile", "#############################\n# QQWry.dat 本地 IP 库路径；相对路径按 rc 文件所在目录解析\n# 仅用于 IPv4，读取失败时自动回退到内置中国 IP 库\n#############################\n#qqwryFile = " + config.QQWryFile + "\n"},
 		{"qqwryUpdateURL", "#############################\n# QQWry.dat 在线更新地址；默认使用 FW27623/qqwry 的最新数据直链\n#############################\n#qqwryUpdateURL = " + config.QQWryUpdateURL + "\n"},
 		{"qqwryUpdateInterval", "#############################\n# QQWry.dat 自动更新频率；设置为 0s 可关闭定时更新\n# 示例：24h 表示每 24 小时检查并下载一次\n#############################\n#qqwryUpdateInterval = 24h\n"},
 		{"proxyMode", "#############################\n# 代理模式，可选 default、keep、cow\n# default：保持 MEOW 当前白名单模式不变\n# keep：在 default 基础上，上游代理全部失败时尝试直连兜底\n# cow：默认直连，直连失败时快速改用上游代理尝试连接\n#############################\n#proxyMode = default\n"},
-		{"logFile", "#############################\n# 日志文件路径，如不指定则输出到 stdout\n#############################\n#logFile = meow.log\n"},
+		{"logFile", "#############################\n# 日志文件路径，如不指定则输出到 stdout；相对路径按 rc 文件所在目录解析\n#############################\n#logFile = meow.log\n"},
 		{"loadBalance", "#############################\n# 多个二级代理时的负载均衡策略，可选 backup、hash、latency\n#############################\n#loadBalance = backup\n"},
 		{"proxy", "#############################\n# 指定二级代理，可重复配置\n# 示例：proxy = socks5://127.0.0.1:1080\n# 示例：proxy = http://user:password@127.0.0.1:8080\n# 示例：proxy = ss://aes-256-cfb:password@1.2.3.4:8388\n#############################\n#proxy = socks5://127.0.0.1:1080\n"},
 		{"sshServer", "#############################\n# 执行 ssh 命令创建 SOCKS5 代理，需要系统已有 ssh 命令和公钥认证\n#############################\n#sshServer = user@server:local_socks_port[:server_ssh_port]\n"},
 		{"allowedClient", "#############################\n# 允许免认证访问的客户端 IP 或网段，多个项用逗号分隔\n#############################\n#allowedClient = 127.0.0.1, 192.168.1.0/24\n"},
 		{"userPasswd", "#############################\n# 要求客户端通过用户名密码认证\n#############################\n#userPasswd = username:password\n"},
-		{"userPasswdFile", "#############################\n# 从文件读取多个用户名密码，文件每行格式：username:password[:port]\n#############################\n#userPasswdFile = user_passwd.txt\n"},
+		{"userPasswdFile", "#############################\n# 从文件读取多个用户名密码，文件每行格式：username:password[:port]\n# 相对路径按 rc 文件所在目录解析\n#############################\n#userPasswdFile = user_passwd.txt\n"},
 		{"authTimeout", "#############################\n# 认证失效时间，语法示例：2h、30m、2h30m\n#############################\n#authTimeout = 2h\n"},
 		{"httpErrorCode", "#############################\n# 将指定 HTTP error code 认为是被干扰并使用二级代理重试\n#############################\n#httpErrorCode = 403\n"},
 		{"parentFailureFeedback", "#############################\n# 请求阶段发生读写、超时、连接重置等错误时，将当前二级代理标记为失败\n#############################\n#parentFailureFeedback = true\n"},
@@ -682,16 +683,16 @@ func defaultConfigOptions() []configOptionTemplate {
 		{"core", "#############################\n# 最多允许使用多少个 CPU 核\n#############################\n#core = 2\n"},
 		{"readTimeout", "#############################\n# 读取超时时间\n#############################\n#readTimeout = 2m\n"},
 		{"dialTimeout", "#############################\n# 连接超时时间\n#############################\n#dialTimeout = 30s\n"},
-		{"directFile", "#############################\n# 自定义白名单文件路径；默认与 rc 文件在同一目录\n#############################\n#directFile = " + config.DirectFile + "\n"},
-		{"proxyFile", "#############################\n# 自定义强制代理名单文件路径；默认与 rc 文件在同一目录\n#############################\n#proxyFile = " + config.ProxyFile + "\n"},
-		{"rejectFile", "#############################\n# 自定义黑名单文件路径；默认与 rc 文件在同一目录\n# 支持具体 IP、CIDR、IP 范围、具体域名、二级域名、通配符、URL path/query 片段\n#############################\n#rejectFile = " + config.RejectFile + "\n"},
-		{"cert", "#############################\n# HTTPS 本地代理证书路径，使用 https listen 时需要\n#############################\n#cert = cert.pem\n"},
-		{"key", "#############################\n# HTTPS 本地代理私钥路径，使用 https listen 时需要\n#############################\n#key = key.pem\n"},
+		{"directFile", "#############################\n# 自定义白名单文件路径；相对路径按 rc 文件所在目录解析\n#############################\n#directFile = " + config.DirectFile + "\n"},
+		{"proxyFile", "#############################\n# 自定义强制代理名单文件路径；相对路径按 rc 文件所在目录解析\n#############################\n#proxyFile = " + config.ProxyFile + "\n"},
+		{"rejectFile", "#############################\n# 自定义黑名单文件路径；相对路径按 rc 文件所在目录解析\n# 支持具体 IP、CIDR、IP 范围、具体域名、二级域名、通配符、URL path/query 片段\n#############################\n#rejectFile = " + config.RejectFile + "\n"},
+		{"cert", "#############################\n# HTTPS 本地代理证书路径，使用 https listen 时需要；相对路径按 rc 文件所在目录解析\n#############################\n#cert = cert.pem\n"},
+		{"key", "#############################\n# HTTPS 本地代理私钥路径，使用 https listen 时需要；相对路径按 rc 文件所在目录解析\n#############################\n#key = key.pem\n"},
 	}
 }
 
 func ensureConfigFiles(rc string) {
-	if err := os.MkdirAll(path.Dir(rc), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(rc), 0755); err != nil {
 		Fatal("can't create config directory:", err)
 	}
 

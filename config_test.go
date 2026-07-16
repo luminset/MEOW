@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -89,5 +91,85 @@ func TestParseProxyMode(t *testing.T) {
 	parser.ParseProxyMode("cow")
 	if config.ProxyMode != proxyModeCow {
 		t.Error("proxyMode cow parse error")
+	}
+}
+
+func TestParseFileOptionsRelativeToConfigDir(t *testing.T) {
+	oldDir := config.dir
+	oldLogFile := config.LogFile
+	oldDirectFile := config.DirectFile
+	oldProxyFile := config.ProxyFile
+	oldRejectFile := config.RejectFile
+	oldUserPasswdFile := config.UserPasswdFile
+	oldQQWryFile := config.QQWryFile
+	oldCert := config.Cert
+	oldKey := config.Key
+	defer func() {
+		config.dir = oldDir
+		config.LogFile = oldLogFile
+		config.DirectFile = oldDirectFile
+		config.ProxyFile = oldProxyFile
+		config.RejectFile = oldRejectFile
+		config.UserPasswdFile = oldUserPasswdFile
+		config.QQWryFile = oldQQWryFile
+		config.Cert = oldCert
+		config.Key = oldKey
+	}()
+
+	config.dir = t.TempDir()
+	parser := configParser{}
+
+	parser.ParseLogFile("meow.log")
+	if want := filepath.Join(config.dir, "meow.log"); config.LogFile != want {
+		t.Fatalf("logFile relative path = %q, want %q", config.LogFile, want)
+	}
+
+	parser.ParseDirectFile("direct.txt")
+	if want := filepath.Join(config.dir, "direct.txt"); config.DirectFile != want {
+		t.Fatalf("directFile relative path = %q, want %q", config.DirectFile, want)
+	}
+
+	parser.ParseProxyFile("proxy.txt")
+	if want := filepath.Join(config.dir, "proxy.txt"); config.ProxyFile != want {
+		t.Fatalf("proxyFile relative path = %q, want %q", config.ProxyFile, want)
+	}
+
+	parser.ParseRejectFile("reject.txt")
+	if want := filepath.Join(config.dir, "reject.txt"); config.RejectFile != want {
+		t.Fatalf("rejectFile relative path = %q, want %q", config.RejectFile, want)
+	}
+
+	userPasswdFile := filepath.Join(config.dir, "user_passwd.txt")
+	if err := os.WriteFile(userPasswdFile, []byte("user:passwd\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	parser.ParseUserPasswdFile("user_passwd.txt")
+	if config.UserPasswdFile != userPasswdFile {
+		t.Fatalf("userPasswdFile relative path = %q, want %q", config.UserPasswdFile, userPasswdFile)
+	}
+
+	parser.ParseQQWryFile("QQWry.dat")
+	want := filepath.Join(config.dir, "QQWry.dat")
+	if config.QQWryFile != want {
+		t.Fatalf("qqwryFile relative path = %q, want %q", config.QQWryFile, want)
+	}
+
+	parser.ParseCert("cert.pem")
+	if want := filepath.Join(config.dir, "cert.pem"); config.Cert != want {
+		t.Fatalf("cert relative path = %q, want %q", config.Cert, want)
+	}
+
+	parser.ParseKey("key.pem")
+	if want := filepath.Join(config.dir, "key.pem"); config.Key != want {
+		t.Fatalf("key relative path = %q, want %q", config.Key, want)
+	}
+
+	abs := filepath.Join(filepath.VolumeName(config.dir), string(filepath.Separator), "data", "QQWry.dat")
+	if !filepath.IsAbs(abs) {
+		abs, _ = filepath.Abs(abs)
+	}
+	parser.ParseQQWryFile(abs)
+	if config.QQWryFile != abs {
+		t.Fatalf("qqwryFile absolute path = %q, want %q", config.QQWryFile, abs)
 	}
 }

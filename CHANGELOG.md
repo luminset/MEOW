@@ -18,6 +18,7 @@
        * 新增 `QQWry.dat` 本地 IPv4 IP 库支持，读取失败时自动回退到内置中国 IP 库
        * 新增 `qqwryFile`、`qqwryUpdateURL`、`qqwryUpdateInterval` 配置项，支持按频率后台更新本地 `QQWry.dat`
        * `QQWry.dat` 缺失或损坏时不阻塞程序启动，后台尝试更新，最低回退到内置 IP 库
+       * 修复文件路径类配置项的相对路径解析，确保 `logFile`、`directFile`、`proxyFile`、`rejectFile`、`userPasswdFile`、`qqwryFile`、`cert`、`key` 均按 `rc` 文件所在目录读取
 
 - 2016-09-29 Version 1.5
 

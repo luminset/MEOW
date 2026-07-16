@@ -4,7 +4,7 @@
 package main
 
 import (
-	"path"
+	"path/filepath"
 )
 
 const (
@@ -19,5 +19,5 @@ const (
 )
 
 func getDefaultRcFile() string {
-	return path.Join(path.Join(getUserHomeDir(), ".meow", rcFname))
+	return filepath.Join(getUserHomeDir(), ".meow", rcFname)
 }

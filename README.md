@@ -29,6 +29,7 @@
 - 程序会自动创建 `direct.txt`、`proxy.txt`、`reject.txt` 名单文件，并在控制台输出提示信息。
 - 如果已有旧版本配置文件，但缺少当前版本支持的配置项，程序会在文件末尾自动追加缺失配置项的注释说明与示例，不覆盖用户已有配置。
 - 如果配置中指定了自定义 `directFile`、`proxyFile`、`rejectFile`，但对应文件不存在，程序会自动创建。
+- 配置中的文件路径类选项支持相对路径，相对路径统一按 `rc` 文件所在目录解析，包括 `logFile`、`directFile`、`proxyFile`、`rejectFile`、`userPasswdFile`、`qqwryFile`、`cert`、`key`。
 - 修复 Windows UTF-8 BOM 导致第一行配置项无法被识别的问题。
 
 ### IP 库增强
@@ -42,7 +43,7 @@
 配置示例：
 
 ```ini
-# QQWry.dat 本地 IP 库路径；默认与 rc 文件在同一目录
+# QQWry.dat 本地 IP 库路径；相对路径按 rc 文件所在目录解析
 #qqwryFile = QQWry.dat
 
 # QQWry.dat 在线更新地址

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -243,6 +244,14 @@ func expandTilde(pth string) string {
 		return path.Join(home, pth[1:])
 	}
 	return pth
+}
+
+func expandConfigPath(pth string) string {
+	pth = expandTilde(strings.TrimSpace(pth))
+	if pth == "" || filepath.IsAbs(pth) {
+		return pth
+	}
+	return filepath.Join(config.dir, pth)
 }
 
 // copyN copys N bytes from src to dst, reading at most rdSize for each read.
