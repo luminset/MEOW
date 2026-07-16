@@ -15,6 +15,9 @@
        * `default` 模式保持原 MEOW 白名单模式不变
        * `keep` 保连接模式在所有上游代理失败后尝试直连目标网站
        * `cow` 模式默认直连，直连失败后快速切换为上游代理尝试连接
+       * 新增 `QQWry.dat` 本地 IPv4 IP 库支持，读取失败时自动回退到内置中国 IP 库
+       * 新增 `qqwryFile`、`qqwryUpdateURL`、`qqwryUpdateInterval` 配置项，支持按频率后台更新本地 `QQWry.dat`
+       * `QQWry.dat` 缺失或损坏时不阻塞程序启动，后台尝试更新，最低回退到内置 IP 库
 
 - 2016-09-29 Version 1.5
 

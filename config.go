@@ -74,6 +74,10 @@ type Config struct {
 	RejectFile string
 	CNIPFile   string
 
+	QQWryFile           string
+	QQWryUpdateURL      string
+	QQWryUpdateInterval time.Duration
+
 	// not configurable in config file
 	PrintVer bool
 
@@ -96,6 +100,9 @@ func initConfig(rcFile string) {
 	config.ProxyFile = path.Join(config.dir, proxyFname)
 	config.RejectFile = path.Join(config.dir, rejectFname)
 	config.CNIPFile = path.Join(config.dir, CNIPFname)
+	config.QQWryFile = path.Join(config.dir, QQWryFname)
+	config.QQWryUpdateURL = defaultQQWryUpdateURL
+	config.QQWryUpdateInterval = 24 * time.Hour
 
 	config.JudgeByIP = true
 	config.ProxyMode = proxyModeDefault
@@ -628,6 +635,18 @@ func (p configParser) ParseJudgeByIP(val string) {
 	config.JudgeByIP = parseBool(val, "judgeByIP")
 }
 
+func (p configParser) ParseQQWryFile(val string) {
+	config.QQWryFile = expandTilde(val)
+}
+
+func (p configParser) ParseQQWryUpdateURL(val string) {
+	config.QQWryUpdateURL = val
+}
+
+func (p configParser) ParseQQWryUpdateInterval(val string) {
+	config.QQWryUpdateInterval = parseDuration(val, "qqwryUpdateInterval")
+}
+
 func (p configParser) ParseCert(val string) {
 	config.Cert = val
 }
@@ -645,6 +664,9 @@ func defaultConfigOptions() []configOptionTemplate {
 	return []configOptionTemplate{
 		{"listen", "#############################\n# 监听地址，设为 0.0.0.0 可以监听所有网卡并共享给局域网使用\n#############################\nlisten = http://" + defaultListenAddr + "\n"},
 		{"judgeByIP", "#############################\n# 通过 IP 判断是否直连，默认开启\n#############################\n#judgeByIP = true\n"},
+		{"qqwryFile", "#############################\n# QQWry.dat 本地 IP 库路径；默认与 rc 文件在同一目录\n# 仅用于 IPv4，读取失败时自动回退到内置中国 IP 库\n#############################\n#qqwryFile = " + config.QQWryFile + "\n"},
+		{"qqwryUpdateURL", "#############################\n# QQWry.dat 在线更新地址；默认使用 FW27623/qqwry 的最新数据直链\n#############################\n#qqwryUpdateURL = " + config.QQWryUpdateURL + "\n"},
+		{"qqwryUpdateInterval", "#############################\n# QQWry.dat 自动更新频率；设置为 0s 可关闭定时更新\n# 示例：24h 表示每 24 小时检查并下载一次\n#############################\n#qqwryUpdateInterval = 24h\n"},
 		{"proxyMode", "#############################\n# 代理模式，可选 default、keep、cow\n# default：保持 MEOW 当前白名单模式不变\n# keep：在 default 基础上，上游代理全部失败时尝试直连兜底\n# cow：默认直连，直连失败时快速改用上游代理尝试连接\n#############################\n#proxyMode = default\n"},
 		{"logFile", "#############################\n# 日志文件路径，如不指定则输出到 stdout\n#############################\n#logFile = meow.log\n"},
 		{"loadBalance", "#############################\n# 多个二级代理时的负载均衡策略，可选 backup、hash、latency\n#############################\n#loadBalance = backup\n"},

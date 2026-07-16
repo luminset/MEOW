@@ -6,11 +6,12 @@ import (
 )
 
 const (
-	rcFname      = "rc.txt"
-	directFname  = "direct.txt"
-	proxyFname   = "proxy.txt"
-	rejectFname  = "reject.txt"
-	CNIPFname    = "china_ip_list.txt"
+	rcFname     = "rc.txt"
+	directFname = "direct.txt"
+	proxyFname  = "proxy.txt"
+	rejectFname = "reject.txt"
+	CNIPFname   = "china_ip_list.txt"
+	QQWryFname  = "QQWry.dat"
 
 	newLine = "\r\n"
 )

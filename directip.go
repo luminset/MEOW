@@ -50,6 +50,12 @@ func ipShouldDirect(ip string) (direct bool) {
 		return ipLow <= CNIPDataStart6Low[ipIndex]+(uint64)(CNIPDataNum6[ipIndex])
 	}
 
+	if isIPv4String(ip) && shouldUseQQWry() {
+		if direct, ok := qqwryShouldDirect(ip); ok {
+			return direct
+		}
+	}
+
 	ipLong, err := ip2long(ip)
 	if err != nil {
 		return false

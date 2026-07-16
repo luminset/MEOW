@@ -34,6 +34,7 @@ func main() {
 
 	if config.JudgeByIP {
 		initCNIPData()
+		initQQWryData()
 	}
 
 	if config.Core > 0 {

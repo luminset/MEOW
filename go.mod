@@ -7,6 +7,7 @@ require (
 	github.com/cyfdecyf/color v0.0.0-20130827105946-31d518c963d2
 	github.com/cyfdecyf/leakybuf v0.0.0-20140618011800-ffae040843be
 	github.com/shadowsocks/shadowsocks-go v0.0.0-20200409064450-3e585ff90601
+	golang.org/x/text v0.40.0
 )
 
 require (

@@ -31,6 +31,27 @@
 - 如果配置中指定了自定义 `directFile`、`proxyFile`、`rejectFile`，但对应文件不存在，程序会自动创建。
 - 修复 Windows UTF-8 BOM 导致第一行配置项无法被识别的问题。
 
+### IP 库增强
+
+- 保留原有内置中国 IP CIDR 库，原始生成地址仍为 `17mon/china_ip_list` 的 IPv4 与 IPv6 列表。
+- 新增 `QQWry.dat` 本地 IPv4 库支持；当本地 `QQWry.dat` 不存在或读取失败时，程序会立即回退到内置中国 IP 库，并在后台尝试下载更新。
+- 如果本地 `QQWry.dat` 可读，且比本地 `china_ip_list` 文件更新，则 IPv4 判断优先使用 `QQWry.dat`；如果 `QQWry.dat` 无法判断，则继续回退到内置/本地 CIDR 库。
+- IPv6 仍使用原有内置/本地 CIDR 库。
+- `QQWry.dat` 默认更新地址为 `https://raw.githubusercontent.com/FW27623/qqwry/main/qqwry.dat`，可通过配置改为其他镜像。
+
+配置示例：
+
+```ini
+# QQWry.dat 本地 IP 库路径；默认与 rc 文件在同一目录
+#qqwryFile = QQWry.dat
+
+# QQWry.dat 在线更新地址
+#qqwryUpdateURL = https://raw.githubusercontent.com/FW27623/qqwry/main/qqwry.dat
+
+# QQWry.dat 自动更新频率；设置为 0s 可关闭定时更新
+#qqwryUpdateInterval = 24h
+```
+
 ### 黑白名单增强
 
 `direct.txt`、`proxy.txt`、`reject.txt` 均支持以下规则：
