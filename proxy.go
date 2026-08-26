@@ -501,6 +501,8 @@ func (c *clientConn) serve() {
 				if err = sv.doRequest(c, &r, &rp); err == nil {
 					goto requestDone
 				}
+			} else {
+				err = retryErr
 			}
 			sv.Close()
 			if err == errPageSent && (!r.hasBody() || r.hasSent()) {
@@ -756,6 +758,54 @@ func canFallbackHTTPStatus(r *Request, fromDirect bool, status int, err error) b
 	return config.ProxyMode == proxyModeKeep && shouldParentFallbackStatus(status)
 }
 
+func canFallbackNetworkError(r *Request, fromDirect bool, err error) bool {
+	if r.fallback || r.partial || !r.responseNotSent() {
+		return false
+	}
+	if !isErrTimeout(err) && !isErrConnReset(err) {
+		return false
+	}
+	if fromDirect {
+		return config.ProxyMode == proxyModeCow && !parentProxy.empty()
+	}
+	return config.ProxyMode == proxyModeKeep
+}
+
+func (c *clientConn) sendFallbackBlockedError(r *Request, sv *serverConn, err error) {
+	var reason string
+	switch {
+	case r.fallback:
+		reason = "已执行过一次回退（代理→直连或直连→代理），不允许再次回退以避免循环"
+	case r.partial:
+		reason = "请求体过大未能完整缓存，无法重试请求"
+	default:
+		reason = "响应已开始发送给客户端，无法重试"
+	}
+
+	var connType string
+	if sv != nil {
+		if sv.isDirect() {
+			connType = "直连"
+		} else {
+			connType = "二级代理"
+		}
+	} else {
+		connType = "未知"
+	}
+
+	errText := "连接超时或网络错误"
+	if err != nil {
+		errText = err.Error()
+	}
+
+	sendErrorPage(c, "502 Fallback blocked", "回退被阻止",
+		fmt.Sprintf("<p>HTTP Request <strong>%v</strong></p>"+
+			"<p>连接方式：%s</p>"+
+			"<p>错误信息：%s</p>"+
+			"<p>无法回退原因：%s</p>",
+			r, connType, errText, reason))
+}
+
 func (c *clientConn) createForcedServerConn(r *Request, direct bool, reason string) (*serverConn, error) {
 	var (
 		conn net.Conn
@@ -781,20 +831,37 @@ func (c *clientConn) createForcedServerConn(r *Request, direct bool, reason stri
 
 func (c *clientConn) tryHTTPStatusFallback(r *Request, sv *serverConn, status int, err error) (*serverConn, error) {
 	fromDirect := sv.isDirect()
-	if !canFallbackHTTPStatus(r, fromDirect, status, err) {
+
+	httpStatusFallback := canFallbackHTTPStatus(r, fromDirect, status, err)
+	networkFallback := canFallbackNetworkError(r, fromDirect, err)
+
+	if !httpStatusFallback && !networkFallback {
+		if isErrTimeout(err) || isErrConnReset(err) {
+			if r.responseNotSent() {
+				c.sendFallbackBlockedError(r, sv, err)
+				return nil, errPageSent
+			}
+			errl.Printf("fallback blocked (response already sent): %v, error: %v\n", r, err)
+		}
 		return nil, err
 	}
+
 	if !fromDirect {
 		reportParentFailure(sv.Conn, err)
 	}
 	sv.Close()
 	r.fallback = true
+
 	if fromDirect {
-		debug.Printf("direct response status %d matched fallback rule, try parent proxy", status)
-		return c.createForcedServerConn(r, false, "Direct response matched fallback status, and parent proxy fallback failed.")
+		debug.Printf("fallback: direct → parent (httpStatus=%v, network=%v, status=%d, err=%v)\n",
+			httpStatusFallback, networkFallback, status, err)
+		return c.createForcedServerConn(r, false,
+			"Direct connection failed, and parent proxy fallback also failed.")
 	}
-	debug.Printf("parent response status %d matched KEEP fallback rule, try direct", status)
-	return c.createForcedServerConn(r, true, "Parent proxy response matched fallback status, and direct fallback failed.")
+	debug.Printf("fallback: parent → direct (httpStatus=%v, network=%v, status=%d, err=%v)\n",
+		httpStatusFallback, networkFallback, status, err)
+	return c.createForcedServerConn(r, true,
+		"Parent proxy connection failed, and direct fallback also failed.")
 }
 
 func isErrTooManyOpenFd(err error) bool {
@@ -1070,37 +1137,53 @@ func (sv *serverConn) doConnect(r *Request, c *clientConn) (err error) {
 		if debug {
 			debug.Printf("cli(%s) send CONNECT request to parent\n", c.RemoteAddr())
 		}
+		needParseResponse := true
 		if err = sv.sendHTTPProxyRequestHeader(r, c); err != nil {
 			debug.Printf("cli(%s) error send CONNECT request to parent: %v\n",
 				c.RemoteAddr(), err)
-			return err
-		}
-		var rp Response
-		sv.initBuf()
-		if err = parseResponse(sv, r, &rp); err != nil {
-			status := rp.Status
-			rp.releaseBuf()
-			if retrySv, retryErr := c.tryHTTPStatusFallback(r, sv, status, err); retryErr == nil {
+			if retrySv, retryErr := c.tryHTTPStatusFallback(r, sv, 0, err); retryErr == nil {
 				sv = retrySv
 				if _, err = c.Write(connEstablished); err != nil {
-					debug.Printf("cli(%s) error send 200 Connecion established: %v\n",
+					debug.Printf("cli(%s) error send 200 Connection established: %v\n",
 						c.RemoteAddr(), err)
 					return err
 				}
+				needParseResponse = false
 			} else {
 				return retryErr
 			}
-		} else {
-			if rp.Status != 200 {
-				_, err = c.Write(rp.rawResponse())
+		}
+		if needParseResponse {
+			var rp Response
+			sv.initBuf()
+			sv.SetDeadline(time.Now().Add(effectiveDialTimeout()))
+			if err = parseResponse(sv, r, &rp); err != nil {
+				sv.SetDeadline(zeroTime)
+				status := rp.Status
 				rp.releaseBuf()
-				return err
-			}
-			if _, err = c.Write(rp.rawResponse()); err != nil {
+				if retrySv, retryErr := c.tryHTTPStatusFallback(r, sv, status, err); retryErr == nil {
+					sv = retrySv
+					if _, err = c.Write(connEstablished); err != nil {
+						debug.Printf("cli(%s) error send 200 Connection established: %v\n",
+							c.RemoteAddr(), err)
+						return err
+					}
+				} else {
+					return retryErr
+				}
+			} else {
+				sv.SetDeadline(zeroTime)
+				if rp.Status != 200 {
+					_, err = c.Write(rp.rawResponse())
+					rp.releaseBuf()
+					return err
+				}
+				if _, err = c.Write(rp.rawResponse()); err != nil {
+					rp.releaseBuf()
+					return err
+				}
 				rp.releaseBuf()
-				return err
 			}
-			rp.releaseBuf()
 		}
 	} else {
 		// debug.Printf("send connection confirmation to %s->%s\n", c.RemoteAddr(), r.URL.HostPort)
